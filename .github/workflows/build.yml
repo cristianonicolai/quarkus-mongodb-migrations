@@ -39,13 +39,18 @@ defaults:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }} with MongoDB ${{ matrix.mongodb }}
     strategy:
       fail-fast: false
       matrix:
 #        os: [windows-latest, macos-latest, ubuntu-latest]
-        os: [ubuntu-latest]
+        # Not ubuntu-latest for now: MongoDB 8 refuses to start on its kernel (6.19 to 7.0.13 are incompatible, see
+        # https://jira.mongodb.org/browse/SERVER-121912). Move back once the ubuntu-24.04 runner has kernel 7.0.14+.
+        os: [ubuntu-22.04]
+        # The MongoDB versions still supported by MongoDB. 7.0 reaches end of life on 2027-08-31.
+        mongodb: ['8.0', '7.0']
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     steps:
       - name: Prepare git
         run: git config --global core.autocrlf false
@@ -60,4 +65,4 @@ jobs:
           cache: 'maven'
 
       - name: Build with Maven
-        run: mvn -B clean install -Dno-format
+        run: mvn -B clean install -Dno-format -Dmongodb.image=mongo:${{ matrix.mongodb }}

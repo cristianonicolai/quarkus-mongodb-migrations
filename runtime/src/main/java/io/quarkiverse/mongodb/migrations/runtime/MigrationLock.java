@@ -24,18 +24,26 @@ import org.jboss.logging.Logger;
 
 import com.mongodb.ErrorCategory;
 import com.mongodb.MongoException;
+import com.mongodb.MongoNamespace;
+import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.Field;
 import com.mongodb.client.model.FindOneAndUpdateOptions;
 import com.mongodb.client.model.ReturnDocument;
 
 import io.quarkiverse.mongodb.migrations.MigrationException;
+import io.quarkus.mongodb.reactive.ReactiveMongoClient;
+import io.smallrye.mutiny.Uni;
 
 /**
  * A lease-based lock stored as a single document in MongoDB.
  * <p>
  * Expiry is computed with the server clock ({@code $$NOW}), so instances with skewed clocks agree on when the lock
  * expires. While held, the lease is renewed in the background, so long-running migrations keep the lock.
+ * <p>
+ * A transaction can be fenced with the lock: {@link #fence(ClientSession)} writes the lock document in the transaction,
+ * so the transaction only commits if this instance still holds the lock, and a takeover can't happen between the fence
+ * and the commit.
  */
 public final class MigrationLock implements AutoCloseable {
 
@@ -52,6 +60,8 @@ public final class MigrationLock implements AutoCloseable {
     private ScheduledExecutorService renewer;
     private volatile boolean lost;
     private volatile String holder;
+    /** Guarded by {@code this}, like the background renewal, so no renewal runs while it is set. */
+    private boolean renewalPaused;
 
     /**
      * @param instanceId name of this instance, stored with the lock for diagnostics
@@ -121,8 +131,47 @@ public final class MigrationLock implements AutoCloseable {
      * @return whether the lock is still held
      */
     public boolean renew() {
-        Bson filter = and(eq("_id", LOCK_ID), eq("owner", owner));
-        return collection.updateOne(filter, List.of(set(new Field<>("expiresAt", expiresAt())))).getMatchedCount() == 1;
+        return collection.updateOne(heldByUs(), extendLease()).getMatchedCount() == 1;
+    }
+
+    /**
+     * Stops the background renewal until {@link #resumeRenewal()}, waiting for a renewal in progress to finish. Used
+     * while a fenced transaction runs: a renewal writes the lock document, which would make the transaction's
+     * {@link #fence(ClientSession) fence} fail with a write conflict.
+     */
+    public synchronized void pauseRenewal() {
+        renewalPaused = true;
+    }
+
+    public synchronized void resumeRenewal() {
+        renewalPaused = false;
+    }
+
+    /**
+     * Extends the lease inside the session's transaction, as its last write before the commit.
+     *
+     * @throws MigrationException if this instance no longer holds the lock; the transaction must then be aborted. A
+     *         takeover after the transaction started makes this fail with a write conflict instead.
+     */
+    public void fence(ClientSession session) {
+        if (collection.updateOne(session, heldByUs(), extendLease()).getMatchedCount() != 1) {
+            throw lost();
+        }
+    }
+
+    /**
+     * The reactive {@link #fence(ClientSession)}, through the same client as the session.
+     */
+    public Uni<Void> fence(ReactiveMongoClient client, com.mongodb.reactivestreams.client.ClientSession session) {
+        MongoNamespace namespace = collection.getNamespace();
+        return client.getDatabase(namespace.getDatabaseName()).getCollection(namespace.getCollectionName())
+                .updateOne(session, heldByUs(), extendLease())
+                .invoke(result -> {
+                    if (result.getMatchedCount() != 1) {
+                        throw lost();
+                    }
+                })
+                .replaceWithVoid();
     }
 
     /**
@@ -137,10 +186,14 @@ public final class MigrationLock implements AutoCloseable {
      */
     public void ensureHeld() {
         if (lost || !renew()) {
-            lost = true;
-            throw new MigrationException("Lost the migration lock; another instance may be running migrations."
-                    + " Consider increasing quarkus.mongodb-migrations.lock-lease-duration.");
+            throw lost();
         }
+    }
+
+    private MigrationException lost() {
+        lost = true;
+        return new MigrationException("Lost the migration lock; another instance may be running migrations."
+                + " Consider increasing quarkus.mongodb-migrations.lock-lease-duration.");
     }
 
     /**
@@ -167,13 +220,25 @@ public final class MigrationLock implements AutoCloseable {
         });
         renewer.scheduleAtFixedRate(() -> {
             try {
-                if (!renew()) {
-                    lost = true;
-                }
+                renewInBackground();
             } catch (RuntimeException e) {
                 LOG.warn("Failed to renew the migration lock", e);
             }
         }, period, period, TimeUnit.MILLISECONDS);
+    }
+
+    private synchronized void renewInBackground() {
+        if (!renewalPaused && !renew()) {
+            lost = true;
+        }
+    }
+
+    private Bson heldByUs() {
+        return and(eq("_id", LOCK_ID), eq("owner", owner));
+    }
+
+    private List<Bson> extendLease() {
+        return List.of(set(new Field<>("expiresAt", expiresAt())));
     }
 
     /**

@@ -56,6 +56,7 @@
                     <systemPropertyVariables>
                         <!-- Lets QuarkusProdModeTest build inside target/, where the Kubernetes extension finds the project -->
                         <project.build.directory>${project.build.directory}</project.build.directory>
+                        <quarkus.mongodb.devservices.image-name>${mongodb.image}</quarkus.mongodb.devservices.image-name>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
