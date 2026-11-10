@@ -15,8 +15,8 @@ what a Quarkus extension does well instead of working around it.
 
 ## Features
 
-- **Migrations as Java code.** Each migration is a CDI bean, blocking or reactive, so it can inject the Quarkus
-  `MongoClient`, `ReactiveMongoClient`, repositories, or any other bean.
+- **Migrations as Java code.** Each migration is a CDI bean, blocking or reactive. It receives a context with the
+  database to migrate, idempotent helpers and the client, and can inject repositories or any other bean.
 - **Checked at build time.** Migrations are discovered from the Jandex index. Duplicate ids, duplicate order numbers,
   and classes that don't implement a migration interface fail the build.
 - **Run once, in order.** Applied migrations are recorded in a MongoDB collection. Pending ones run in order, and
@@ -27,6 +27,9 @@ what a Quarkus extension does well instead of working around it.
   generated, and the application waits for it.
 - **Idempotent helpers** for creating and dropping indexes and collections, TTL indexes, and renaming or removing
   fields, in blocking and reactive variants.
+- **Opt-in transactions.** A migration marked `transactional` runs in a MongoDB transaction, together with its history
+  entry, so both commit or neither does.
+- **Changed-document counts** reported by migrations are logged and stored in the history.
 - **Dev UI card** showing which migrations are applied or pending, their latest failures and the lock holder, with a
   button to run pending migrations.
 
@@ -47,66 +50,139 @@ Add the dependency:
 </dependency>
 ```
 
+### API at a glance
+
+| Type | What it is |
+|---|---|
+| `@Migration` | Marks a migration class: `id` and `order` (both unique), optional `runAlways` and `transactional`. |
+| `MongoMigration` / `ReactiveMongoMigration` | What a migration implements: `apply(context)`, and optionally `rollback(context)`. The reactive one returns `Uni<Void>`. |
+| `MigrationContext` / `ReactiveMigrationContext` | Passed to `apply` and `rollback`: `database()`, `collection(name)`, `client()`, `session()` (transactional migrations), the [helpers](#helpers), and `recordChanges(...)`. |
+| `MongoMigrator` | Inject it to run pending migrations with `migrate()`. |
+| `MigrationHelpers` / `ReactiveMigrationHelpers` | The helpers as static methods taking a database, for other databases. |
+| `MigrationException` | Thrown when a migration run fails. |
+
+The examples below use static imports from the driver's `Filters`, `Updates` and `Indexes` builders.
+
 ### Writing a migration
 
 Annotate a class with `@Migration` and implement `MongoMigration`. The `id` is recorded once the migration is
 applied, and `order` sets the run order. Both must be unique.
 
+`apply` receives a `MigrationContext`: the database to migrate, with helpers that work on it, so a migration needs no
+injected client or database name.
+
 ```java
 import static com.mongodb.client.model.Indexes.ascending;
-import static io.quarkiverse.mongodb.migrations.MigrationHelpers.createIndex;
 
 @Migration(id = "create-users-email-index", order = 1)
 public class CreateUsersEmailIndex implements MongoMigration {
 
-    @Inject
-    MongoClient client;
-
     @Override
-    public void apply() {
-        createIndex(client.getDatabase("app"), "users", "email_idx", ascending("email"),
-                new IndexOptions().unique(true));
+    public void apply(MigrationContext context) {
+        context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));
+        context.renameField("users", "mail", "email");
     }
 }
 ```
 
-For reactive code, implement `ReactiveMongoMigration` and return a `Uni`:
+For anything the helpers don't cover, `context.database()` and `context.collection(name)` give full access to the
+MongoDB driver. `context.client()` returns the client itself, for other databases, admin commands, or sessions you
+manage yourself. For a migration that should run in a transaction, see
+[Transactional migrations](#transactional-migrations).
+
+For reactive code, implement `ReactiveMongoMigration`. It receives a `ReactiveMigrationContext` with the same helpers,
+returning `Uni`:
 
 ```java
 @Migration(id = "insert-default-user", order = 2)
 public class InsertDefaultUser implements ReactiveMongoMigration {
 
-    @Inject
-    ReactiveMongoClient client;
-
     @Override
-    public Uni<Void> apply() {
-        return client.getDatabase("app").getCollection("users")
+    public Uni<Void> apply(ReactiveMigrationContext context) {
+        return context.collection("users")
                 .insertOne(new Document("email", "admin@example.com"))
                 .replaceWithVoid();
     }
 }
 ```
 
+The context works on the database configured for the MongoDB client: `quarkus.mongodb.database`, or the database of
+the client named by `quarkus.mongodb-migrations.mongo-client-name`. Migrations are still CDI beans, so they can also
+inject repositories, other clients or any other bean.
+
 Set `runAlways = true` for a migration that should run on every migration run, even after it has been applied.
 
 Never change the `id` of an applied migration, or it runs again.
 
+### Counting changed documents
+
+A migration can report how many documents it changed. The count is logged, stored in the history entry as
+`documentsChanged`, and shown in the Dev UI:
+
+```
+Ran migration backfill-order-status in 1204 ms, 4210 documents changed
+```
+
+The field helpers (`renameField`, `removeField`) count their own changes. For changes made with the driver, pass the
+result to the context:
+
+```java
+context.recordChanges(context.collection("orders").updateMany(eq("status", null), set("status", "open")));
+```
+
+`recordChanges` takes an `UpdateResult`, `DeleteResult`, `InsertOneResult`, `InsertManyResult`, `BulkWriteResult`, or
+a plain number. In a reactive migration, use it in the pipeline, for example `.invoke(context::recordChanges)`.
+
+MongoDB only reports counts in each write's result, so changes that aren't reported can't be counted. A migration that
+reports nothing has no count rather than 0, so it isn't mistaken for one that changed nothing. When a migration that
+isn't transactional fails, the documents it reported before failing are stored in its failure record, showing how much
+it changed before stopping.
+
+### Transactional migrations
+
+Set `transactional = true` for a migration whose data changes must be all-or-nothing. The extension starts a MongoDB
+transaction, runs the migration in it, and writes the migration's history entry in the same transaction, so both
+commit together or neither does:
+
+```java
+@Migration(id = "backfill-order-status", order = 4, transactional = true)
+public class BackfillOrderStatus implements MongoMigration {
+
+    @Override
+    public void apply(MigrationContext context) {
+        context.collection("orders").updateMany(context.session(), eq("status", null), set("status", "open"));
+        context.renameField("orders", "state", "legacyState");
+    }
+}
+```
+
+- Pass `context.session()` to every driver call. The driver can't attach a session implicitly, so calls without it run
+  outside the transaction. The field helpers (`renameField`, `removeField`) use the session automatically.
+- When the migration fails, the transaction is aborted and `rollback` is not called. The abort discards every write
+  made with `context.session()`; writes made without it ran outside the transaction and are kept. The failure is still
+  recorded in the failure collection, which is written outside the transaction.
+- MongoDB's transaction rules apply: a replica set or sharded cluster is required, transactions are limited in time
+  (60 seconds by default) and size, and schema changes are not allowed. The schema helpers (`createIndex`,
+  `dropIndex`, `createCollection`, `dropCollection`, `renameCollection`, `createTtlIndex`) refuse to run in a
+  transactional migration. Put schema changes in a separate migration.
+- Reactive migrations work the same way, with `ReactiveMigrationContext.session()`.
+
 ### Failures and rollback
 
 A migration that throws, or whose `Uni` fails, stops the run and is not recorded, so it runs again next time. Before
-the run stops, the migration's `rollback()` is called to undo its partial changes. It's optional: both interfaces
-provide a default that does nothing.
+the run stops, the migration's `rollback` is called with the same context to undo its partial changes. It's optional:
+both interfaces provide a default that does nothing. `rollback` is not called for
+[transactional migrations](#transactional-migrations): their transaction is aborted instead.
 
 ```java
 @Override
-public void rollback() {
-    dropIndex(client.getDatabase("app"), "users", "email_idx");
+public void rollback(MigrationContext context) {
+    context.dropIndex("users", "email_idx");
 }
 ```
 
 Only the failed migration is rolled back. Migrations that succeeded earlier in the same run stay applied. If
-`rollback()` itself fails, its error is attached to the migration failure as a suppressed exception.
+`rollback` itself fails, its error is attached to the migration failure as a suppressed exception.
 
 Rollback is best effort, since MongoDB can't undo most changes in a transaction. Writing migrations to be safe to
 re-run (as the helpers are) means a retry works even when a rollback couldn't clean up.
@@ -122,7 +198,8 @@ gone (for example once a Kubernetes job is cleaned up):
   instanceId: "orders-init-x7k2p",
   durationMillis: 1830,
   error: { type: "…", message: "…", stackTrace: "…" },   // first 20 frames, message capped at 2000 characters
-  rollbackError: null                                    // or { type, message } if the rollback failed too
+  rollbackError: null,                                   // or { type, message } if the rollback failed too
+  documentsChangedBeforeFailure: 120                     // only if it reported changes, and wasn't transactional
 }
 ```
 
@@ -140,7 +217,24 @@ quarkus.mongodb-migrations.migrate-at-start=true
 Or inject `MongoMigrator` and call `migrate()`, which returns the ids of the migrations that ran.
 
 The history and lock are stored in the database configured for the MongoDB client (`quarkus.mongodb.database`), or
-in `quarkus.mongodb-migrations.database` if set.
+in `quarkus.mongodb-migrations.database` if set. Each applied migration has a history entry:
+
+```js
+{
+  _id: "backfill-order-status",       // the migration id
+  order: 4,
+  className: "com.example.migrations.BackfillOrderStatus",   // kept up to date if the class is renamed
+  runAlways: false,
+  transactional: true,
+  appliedAt: ISODate("…"),            // first run, MongoDB server time
+  appliedBy: "orders-init-x7k2p",     // instance-id of the first run
+  lastAppliedAt: ISODate("…"),        // latest run; differs from appliedAt only for runAlways migrations
+  lastAppliedBy: "orders-init-x7k2p",
+  runCount: 1,
+  durationMillis: 1204,               // latest run
+  documentsChanged: 4210              // latest run, only if the migration reported changes
+}
+```
 
 ### Running as a Kubernetes job
 
@@ -156,17 +250,16 @@ one-off job, and set `QUARKUS_MONGODB_MIGRATIONS_ENABLED=false` on the regular d
 In dev mode, the Dev UI (`/q/dev-ui`) has a **MongoDB Migrations** card with two pages:
 
 - **Status:** every migration with its state (applied, pending, failed or runs always), when and by which instance it
-  was applied, its run count, and its latest failure with the rollback outcome. It also shows who holds the lock, and
-  has a button to run the pending migrations without restarting the application. The card's label shows how many
-  migrations are pending.
+  was applied, its run count, how many documents it changed, and its latest failure with the rollback outcome. It
+  also shows who holds the lock, and has a button to run the pending migrations without restarting the application.
+  The card's label shows how many migrations are pending.
 - **Migrations:** the migrations found at build time, with their order, id, type and class.
 
 The Dev UI needs an HTTP server in the application, such as the one `quarkus-rest` brings in.
 
 ### Helpers
 
-`MigrationHelpers` (blocking, on `MongoDatabase`) and `ReactiveMigrationHelpers` (returning `Uni`, on
-`ReactiveMongoDatabase`) provide steps that are safe to run more than once:
+The migration contexts provide steps that are safe to run more than once, on the database being migrated:
 
 | Helper | What it does |
 |---|---|
@@ -179,14 +272,31 @@ The Dev UI needs an HTTP server in the application, such as the one `quarkus-res
 | `indexExists` | Whether a named index exists. |
 | `renameField` / `removeField` | Renames or removes a field in every document that has it. |
 
+The same helpers are available as static methods taking the database as their first argument, in `MigrationHelpers`
+(blocking, on `MongoDatabase`) and `ReactiveMigrationHelpers` (returning `Uni`, on `ReactiveMongoDatabase`), for
+migrations that work on another database.
+
+### Testing a migration
+
+A migration can be tested on its own by creating its context directly, for example against a test database:
+
+```java
+MigrationContext context = new MigrationContext(mongoClient, "test-db");
+new BackfillOrderStatus().apply(context);
+assertEquals(OptionalLong.of(4210), context.documentsChanged());
+```
+
+`new MigrationContext(client, database, session)` creates a context for a transactional migration, and
+`ReactiveMigrationContext` has the same constructors.
+
 ## Configuration
 
 | Property | Default | Description |
 |---|---|---|
 | `quarkus.mongodb-migrations.migrate-at-start` | `false` | Run pending migrations at startup. |
 | `quarkus.mongodb-migrations.enabled` | `true` | Whether startup migrations run. Set to `false` in pods when a Kubernetes job runs them. |
-| `quarkus.mongodb-migrations.mongo-client-name` | default client | Client that stores the history and lock. Fixed at build time. |
-| `quarkus.mongodb-migrations.database` | client's database | Database that stores the history and lock. |
+| `quarkus.mongodb-migrations.mongo-client-name` | default client | Client that migrations work with and that stores the history and lock. Fixed at build time. |
+| `quarkus.mongodb-migrations.database` | client's database | Database that stores the history and lock. Migrations still work on the client's database. |
 | `quarkus.mongodb-migrations.history-collection` | `migrationHistory` | Collection that records applied migrations. |
 | `quarkus.mongodb-migrations.lock-collection` | `migrationLock` | Collection that holds the lock. |
 | `quarkus.mongodb-migrations.record-failures` | `true` | Record each failed attempt in the failure collection. |

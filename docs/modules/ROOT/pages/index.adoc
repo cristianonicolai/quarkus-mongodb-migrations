@@ -35,12 +35,9 @@ Annotate a class with `@Migration` and implement `MongoMigration` (or `ReactiveM
 @Migration(id = "create-users-email-index", order = 1)
 public class CreateUsersEmailIndex implements MongoMigration {
 
-    @Inject
-    MongoClient client;
-
     @Override
-    public void apply() {
-        createIndex(client.getDatabase("app"), "users", "email_idx", ascending("email"));
+    public void apply(MigrationContext context) {
+        context.createIndex("users", "email_idx", ascending("email"));
     }
 }
 ----

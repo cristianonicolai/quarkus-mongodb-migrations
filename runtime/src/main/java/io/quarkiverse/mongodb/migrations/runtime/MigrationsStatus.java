@@ -13,14 +13,19 @@ public record MigrationsStatus(List<Migration> migrations, int pending, Lock loc
 
     /**
      * @param applied whether the migration is recorded in the history
+     * @param documentsChanged the documents its latest run reported as changed, or {@code null} if it reported none
      * @param lastFailure the latest recorded failure, only when it happened after the latest successful run
      */
     public record Migration(String id, int order, String className, boolean reactive, boolean runAlways, boolean applied,
-            String appliedAt, String appliedBy, String lastAppliedAt, Integer runCount, Failure lastFailure) {
+            String appliedAt, String appliedBy, String lastAppliedAt, Integer runCount, Long documentsChanged,
+            Failure lastFailure) {
     }
 
+    /**
+     * @param documentsChangedBeforeFailure the documents reported as changed before the failure, or {@code null}
+     */
     public record Failure(String failedAt, String instanceId, String errorType, String errorMessage,
-            String rollbackErrorMessage) {
+            String rollbackErrorMessage, Long documentsChangedBeforeFailure) {
     }
 
     /**

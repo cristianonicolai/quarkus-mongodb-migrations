@@ -22,6 +22,7 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoDatabase;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkiverse.mongodb.migrations.runtime.MigrationLock;
@@ -74,7 +75,7 @@ public class MigrationConcurrencyTest {
     public static class SlowMigration implements MongoMigration {
 
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             RUNS.incrementAndGet();
             STARTED.countDown();
             try {

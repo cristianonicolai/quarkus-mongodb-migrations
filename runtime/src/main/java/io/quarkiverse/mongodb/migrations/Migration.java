@@ -36,4 +36,17 @@ public @interface Migration {
      * Whether the migration runs on every migration run, even when it has already been applied.
      */
     boolean runAlways() default false;
+
+    /**
+     * Whether the migration runs in a MongoDB multi-document transaction, started by the extension.
+     * <p>
+     * The migration's changes and its history entry are committed together, or not at all: when the migration fails,
+     * the transaction is aborted and {@code rollback} is not called. Pass the context's {@code session()} to every
+     * driver call so it takes part in the transaction; the context's field helpers do this for you.
+     * <p>
+     * Meant for data changes that must be all-or-nothing. MongoDB's transaction rules apply: a replica set or sharded
+     * cluster is required, transactions are time and size limited (60 seconds by default), and schema changes such as
+     * creating or dropping indexes and collections are not allowed, so the context's schema helpers refuse to run.
+     */
+    boolean transactional() default false;
 }

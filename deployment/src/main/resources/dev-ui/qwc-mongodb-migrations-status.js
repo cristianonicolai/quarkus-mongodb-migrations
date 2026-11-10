@@ -95,6 +95,8 @@ export class QwcMongodbMigrationsStatus extends QwcHotReloadElement {
                 <vaadin-grid-column header="Applied" width="16em" flex-grow="1"
                         ${columnBodyRenderer(migration => this._renderApplied(migration), [])}></vaadin-grid-column>
                 <vaadin-grid-column header="Runs" path="runCount" auto-width flex-grow="0"></vaadin-grid-column>
+                <vaadin-grid-column header="Changed" auto-width flex-grow="0"
+                        ${columnBodyRenderer(migration => this._renderChanged(migration), [])}></vaadin-grid-column>
                 <vaadin-grid-column header="Latest failure" width="16em" flex-grow="2"
                         ${columnBodyRenderer(migration => this._renderFailure(migration.lastFailure), [])}></vaadin-grid-column>
             </vaadin-grid>`;
@@ -133,6 +135,13 @@ export class QwcMongodbMigrationsStatus extends QwcHotReloadElement {
         return html`${this._time(migration.appliedAt)} <span class="muted">by ${migration.appliedBy}</span>${last}`;
     }
 
+    _renderChanged(migration) {
+        if (migration.documentsChanged === null || migration.documentsChanged === undefined) {
+            return html`<span class="muted">—</span>`;
+        }
+        return html`${migration.documentsChanged.toLocaleString()}`;
+    }
+
     _renderFailure(failure) {
         if (!failure) {
             return '';
@@ -140,7 +149,10 @@ export class QwcMongodbMigrationsStatus extends QwcHotReloadElement {
         const rollback = failure.rollbackErrorMessage
                 ? html`<br>Rollback also failed: ${failure.rollbackErrorMessage}`
                 : '';
-        return html`<span class="failure">${this._time(failure.failedAt)}: ${failure.errorMessage}${rollback}</span>`;
+        const changed = failure.documentsChangedBeforeFailure != null
+                ? html`<br>${failure.documentsChangedBeforeFailure.toLocaleString()} documents changed before it failed`
+                : '';
+        return html`<span class="failure">${this._time(failure.failedAt)}: ${failure.errorMessage}${rollback}${changed}</span>`;
     }
 
     _time(iso) {

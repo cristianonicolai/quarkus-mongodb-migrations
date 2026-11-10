@@ -12,6 +12,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import com.mongodb.client.MongoClient;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
@@ -42,7 +43,7 @@ public class MigrationFailuresDisabledTest {
     @Migration(id = "always-fails", order = 1)
     public static class AlwaysFails implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             throw new IllegalStateException("always fails");
         }
     }

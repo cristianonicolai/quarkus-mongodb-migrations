@@ -9,15 +9,22 @@ public interface ReactiveMongoMigration {
 
     /**
      * Applies the migration. The migration is complete when the returned {@link Uni} completes. A failed {@link Uni}
-     * fails the migration run: {@link #rollback()} is called, and the migration is not recorded as applied.
+     * fails the migration run, and the migration is not recorded as applied. {@link #rollback(ReactiveMigrationContext)}
+     * is then called, unless the migration is {@link Migration#transactional() transactional}: its transaction is
+     * aborted instead.
+     *
+     * @param context the database to migrate, with reactive helpers that work on it
      */
-    Uni<Void> apply();
+    Uni<Void> apply(ReactiveMigrationContext context);
 
     /**
-     * Undoes the partial changes of a failed {@link #apply()}. Called only when {@code apply()} fails, never for
-     * migrations that were applied successfully. Does nothing by default.
+     * Undoes the partial changes of a failed {@link #apply(ReactiveMigrationContext)}. Called only when {@code apply}
+     * fails, never for migrations that were applied successfully, and never for {@link Migration#transactional()
+     * transactional} migrations, whose failed transaction is aborted instead. Does nothing by default.
+     *
+     * @param context the database to migrate, with reactive helpers that work on it
      */
-    default Uni<Void> rollback() {
+    default Uni<Void> rollback(ReactiveMigrationContext context) {
         return Uni.createFrom().voidItem();
     }
 }

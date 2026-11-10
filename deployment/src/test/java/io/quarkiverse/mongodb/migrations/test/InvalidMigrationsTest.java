@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkus.test.QuarkusExtensionTest;
 
@@ -36,14 +37,14 @@ public class InvalidMigrationsTest {
     @Migration(id = "same-id", order = 1)
     public static class First implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
         }
     }
 
     @Migration(id = "same-id", order = 1)
     public static class Second implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
         }
     }
 
@@ -58,7 +59,7 @@ public class InvalidMigrationsTest {
     @Migration(id = " ", order = 3)
     public static class BlankId implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
         }
     }
 }

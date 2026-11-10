@@ -13,6 +13,9 @@ final class Expressions {
     /** The MongoDB server's current time. */
     static final String NOW = "$$NOW";
 
+    /** As the value of a field in a {@code $set} stage, removes the field. */
+    static final String REMOVE = "$$REMOVE";
+
     private Expressions() {
     }
 
