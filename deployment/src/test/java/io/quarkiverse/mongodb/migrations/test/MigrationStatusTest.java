@@ -21,6 +21,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import com.mongodb.client.MongoClient;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.runtime.MigrationLock;
@@ -110,14 +111,14 @@ public class MigrationStatusTest {
     @Migration(id = "first", order = 1)
     public static class First implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
         }
     }
 
     @Migration(id = "second", order = 2)
     public static class Second implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             if (failSecond) {
                 throw new IllegalStateException("second failed on purpose");
             }
@@ -127,7 +128,7 @@ public class MigrationStatusTest {
     @Migration(id = "always", order = 3, runAlways = true)
     public static class Always implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
         }
     }
 }

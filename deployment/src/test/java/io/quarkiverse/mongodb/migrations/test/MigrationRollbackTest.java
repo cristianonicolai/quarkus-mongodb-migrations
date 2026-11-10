@@ -1,8 +1,6 @@
 package io.quarkiverse.mongodb.migrations.test;
 
 import static com.mongodb.client.model.Indexes.ascending;
-import static io.quarkiverse.mongodb.migrations.MigrationHelpers.createIndex;
-import static io.quarkiverse.mongodb.migrations.MigrationHelpers.dropIndex;
 import static io.quarkiverse.mongodb.migrations.MigrationHelpers.indexExists;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -27,9 +25,11 @@ import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.Sorts;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
+import io.quarkiverse.mongodb.migrations.ReactiveMigrationContext;
 import io.quarkiverse.mongodb.migrations.ReactiveMongoMigration;
 import io.quarkus.test.QuarkusExtensionTest;
 import io.smallrye.mutiny.Uni;
@@ -131,14 +131,14 @@ public class MigrationRollbackTest {
     public static class ReactiveStep implements ReactiveMongoMigration {
 
         @Override
-        public Uni<Void> apply() {
+        public Uni<Void> apply(ReactiveMigrationContext context) {
             return failReactive
                     ? Uni.createFrom().failure(new IllegalStateException("reactive failure"))
                     : Uni.createFrom().voidItem();
         }
 
         @Override
-        public Uni<Void> rollback() {
+        public Uni<Void> rollback(ReactiveMigrationContext context) {
             return Uni.createFrom().voidItem().invoke(() -> ROLLBACKS.add("reactive-step"));
         }
     }
@@ -146,23 +146,19 @@ public class MigrationRollbackTest {
     @Migration(id = "blocking-step", order = 2)
     public static class BlockingStep implements MongoMigration {
 
-        @Inject
-        MongoClient client;
-
         @Override
-        public void apply() {
-            MongoDatabase database = client.getDatabase(DATABASE);
-            createIndex(database, "items", "name_idx", ascending("name"));
+        public void apply(MigrationContext context) {
+            context.createIndex("items", "name_idx", ascending("name"));
             if (failBlocking) {
                 throw new IllegalStateException("blocking failure");
             }
         }
 
         @Override
-        public void rollback() {
+        public void rollback(MigrationContext context) {
             ROLLBACKS.add("blocking-step");
-            dropIndex(client.getDatabase(DATABASE), "items", "name_idx");
-            assertFalse(indexExists(client.getDatabase(DATABASE), "items", "name_idx"));
+            context.dropIndex("items", "name_idx");
+            assertFalse(context.indexExists("items", "name_idx"), "rollback receives the same database as apply");
             if (failBlockingRollback) {
                 throw new IllegalStateException("rollback failure");
             }
@@ -173,14 +169,14 @@ public class MigrationRollbackTest {
     public static class ErrorStep implements MongoMigration {
 
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             if (failWithError) {
                 throw new AssertionError("error failure");
             }
         }
 
         @Override
-        public void rollback() {
+        public void rollback(MigrationContext context) {
             ROLLBACKS.add("error-step");
         }
     }

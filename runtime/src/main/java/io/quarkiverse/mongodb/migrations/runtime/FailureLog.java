@@ -5,11 +5,13 @@ import static com.mongodb.client.model.Filters.eq;
 import static io.quarkiverse.mongodb.migrations.MigrationHelpers.collectionExists;
 import static io.quarkiverse.mongodb.migrations.MigrationHelpers.createTtlIndex;
 import static io.quarkiverse.mongodb.migrations.runtime.Expressions.NOW;
+import static io.quarkiverse.mongodb.migrations.runtime.Expressions.REMOVE;
 import static io.quarkiverse.mongodb.migrations.runtime.Expressions.literal;
 
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.stream.Collectors;
 
 import org.bson.Document;
@@ -49,8 +51,10 @@ final class FailureLog {
      *
      * @param error the error thrown by the migration
      * @param rollbackError the error thrown by its rollback, or {@code null} if the rollback succeeded
+     * @param documentsChangedBeforeFailure the documents the migration reported as changed before it failed, if any
      */
-    void record(MigrationDescriptor migration, Throwable error, Throwable rollbackError, Duration duration) {
+    void record(MigrationDescriptor migration, Throwable error, Throwable rollbackError, Duration duration,
+            OptionalLong documentsChangedBeforeFailure) {
         try {
             MongoCollection<Document> collection = database.getCollection(collectionName);
             ensureTtlIndex(collection);
@@ -63,7 +67,10 @@ final class FailureLog {
                     new Field<>("instanceId", literal(instanceId)),
                     new Field<>("durationMillis", duration.toMillis()),
                     new Field<>("error", literal(describe(error, true))),
-                    new Field<>("rollbackError", rollbackError == null ? null : literal(describe(rollbackError, false))))),
+                    new Field<>("rollbackError", rollbackError == null ? null : literal(describe(rollbackError, false))),
+                    new Field<>("documentsChangedBeforeFailure", documentsChangedBeforeFailure.isPresent()
+                            ? documentsChangedBeforeFailure.getAsLong()
+                            : REMOVE))),
                     new UpdateOptions().upsert(true));
         } catch (Throwable e) {
             LOG.warnf(e, "Failed to record the failure of migration %s", migration.getId());

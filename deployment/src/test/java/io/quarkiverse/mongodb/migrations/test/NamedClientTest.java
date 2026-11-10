@@ -3,6 +3,7 @@ package io.quarkiverse.mongodb.migrations.test;
 import static io.quarkiverse.mongodb.migrations.MigrationHelpers.collectionExists;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import jakarta.inject.Inject;
 
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import com.mongodb.client.MongoClient;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkus.mongodb.MongoClientName;
 import io.quarkus.test.QuarkusExtensionTest;
@@ -40,10 +42,17 @@ public class NamedClientTest {
         assertFalse(collectionExists(defaultClient.getDatabase("named-client-app"), "migrationHistory"));
     }
 
+    @Test
+    void migrationsWorkOnTheNamedClientDatabase() {
+        assertTrue(collectionExists(metadataClient.getDatabase("named-client-metadata"), "created-by-migration"));
+        assertFalse(collectionExists(defaultClient.getDatabase("named-client-app"), "created-by-migration"));
+    }
+
     @Migration(id = "noop", order = 1)
     public static class Noop implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
+            context.createCollection("created-by-migration");
         }
     }
 }

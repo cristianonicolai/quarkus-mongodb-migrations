@@ -15,6 +15,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import com.mongodb.client.MongoClient;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkus.test.QuarkusExtensionTest;
@@ -52,7 +53,7 @@ public class MigrationsDisabledTest {
     @Migration(id = "recorded", order = 1)
     public static class Recorded implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             RUNS.add("recorded");
         }
     }

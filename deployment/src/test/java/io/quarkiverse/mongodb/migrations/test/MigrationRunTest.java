@@ -4,7 +4,6 @@ import static com.mongodb.client.model.Filters.eq;
 import static com.mongodb.client.model.Indexes.ascending;
 import static com.mongodb.client.model.Updates.combine;
 import static com.mongodb.client.model.Updates.set;
-import static io.quarkiverse.mongodb.migrations.MigrationHelpers.createIndex;
 import static io.quarkiverse.mongodb.migrations.MigrationHelpers.indexExists;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -28,10 +27,11 @@ import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.Sorts;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
+import io.quarkiverse.mongodb.migrations.ReactiveMigrationContext;
 import io.quarkiverse.mongodb.migrations.ReactiveMongoMigration;
-import io.quarkus.mongodb.reactive.ReactiveMongoClient;
 import io.quarkus.test.QuarkusExtensionTest;
 import io.smallrye.mutiny.Uni;
 
@@ -113,13 +113,9 @@ public class MigrationRunTest {
     @Migration(id = "create-users-index", order = 1)
     public static class CreateUsersIndex implements MongoMigration {
 
-        @Inject
-        MongoClient client;
-
         @Override
-        public void apply() {
-            createIndex(client.getDatabase(DATABASE), "users", "email_idx", ascending("email"),
-                    new IndexOptions().unique(true));
+        public void apply(MigrationContext context) {
+            context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));
             RUNS.add("create-users-index");
         }
     }
@@ -127,12 +123,9 @@ public class MigrationRunTest {
     @Migration(id = "insert-default-user", order = 2)
     public static class InsertDefaultUser implements ReactiveMongoMigration {
 
-        @Inject
-        ReactiveMongoClient client;
-
         @Override
-        public Uni<Void> apply() {
-            return client.getDatabase(DATABASE).getCollection("users")
+        public Uni<Void> apply(ReactiveMigrationContext context) {
+            return context.collection("users")
                     .insertOne(new Document("email", "admin@example.com"))
                     .invoke(() -> RUNS.add("insert-default-user"))
                     .replaceWithVoid();
@@ -143,7 +136,7 @@ public class MigrationRunTest {
     public static class CountRuns implements MongoMigration {
 
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             RUNS.add("count-runs");
         }
     }

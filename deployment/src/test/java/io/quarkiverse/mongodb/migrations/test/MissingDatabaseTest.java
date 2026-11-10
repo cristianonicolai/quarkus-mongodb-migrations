@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkus.test.QuarkusExtensionTest;
 
@@ -29,7 +30,7 @@ public class MissingDatabaseTest {
     @Migration(id = "noop", order = 1)
     public static class Noop implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
         }
     }
 }

@@ -43,6 +43,7 @@ import io.quarkus.deployment.builditem.InitTaskCompletedBuildItem;
 import io.quarkus.deployment.builditem.ServiceStartBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.mongodb.deployment.spi.MongoClientBuildItem;
+import io.quarkus.mongodb.reactive.ReactiveMongoClient;
 
 class MongodbMigrationsProcessor {
 
@@ -94,6 +95,7 @@ class MongodbMigrationsProcessor {
             String id = annotation.value("id").asString();
             int order = annotation.value("order").asInt();
             AnnotationValue runAlways = annotation.value("runAlways");
+            AnnotationValue transactional = annotation.value("transactional");
 
             if (migrationClass.isInterface() || migrationClass.isAbstract()) {
                 errors.add(className + " is annotated with @Migration but is abstract or an interface");
@@ -110,8 +112,8 @@ class MongodbMigrationsProcessor {
                 errors.add(className + " has a blank migration id");
                 continue;
             }
-            migrations.add(new MigrationDescriptor(id, order, runAlways != null && runAlways.asBoolean(), isReactive,
-                    className));
+            migrations.add(new MigrationDescriptor(id, order, runAlways != null && runAlways.asBoolean(),
+                    transactional != null && transactional.asBoolean(), isReactive, className));
         }
 
         errors.addAll(duplicates(migrations, MigrationDescriptor::getId, "id"));
@@ -122,6 +124,17 @@ class MongodbMigrationsProcessor {
 
         migrations.sort(Comparator.comparingInt(MigrationDescriptor::getOrder));
         return new MigrationsBuildItem(migrations);
+    }
+
+    /**
+     * Reactive migrations get their database from the reactive client, which nothing else may inject. Without this,
+     * Quarkus would remove that client's bean as unused.
+     */
+    @BuildStep
+    void keepReactiveClient(MigrationsBuildItem migrations, BuildProducer<UnremovableBeanBuildItem> unremovableBeans) {
+        if (migrations.getMigrations().stream().anyMatch(MigrationDescriptor::isReactive)) {
+            unremovableBeans.produce(UnremovableBeanBuildItem.beanTypes(DotName.createSimple(ReactiveMongoClient.class)));
+        }
     }
 
     /**

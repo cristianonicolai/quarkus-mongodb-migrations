@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
@@ -37,7 +38,7 @@ public class FailureLogWriteFailureTest {
     @Migration(id = "broken", order = 1)
     public static class Broken implements MongoMigration {
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             throw new IllegalStateException("broken on purpose");
         }
     }

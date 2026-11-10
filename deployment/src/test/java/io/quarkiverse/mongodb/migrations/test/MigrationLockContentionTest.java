@@ -23,6 +23,7 @@ import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.ReplaceOptions;
 
 import io.quarkiverse.mongodb.migrations.Migration;
+import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
@@ -101,15 +102,12 @@ public class MigrationLockContentionTest {
     @Migration(id = "first", order = 1)
     public static class First implements MongoMigration {
 
-        @Inject
-        MongoClient client;
-
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             RUNS.add("first");
             if (stealLock) {
                 // Another instance takes over, as if this one had stopped renewing for longer than the lease.
-                holdLockAs(client.getDatabase(DATABASE), "thief");
+                holdLockAs(context.database(), "thief");
             }
         }
     }
@@ -118,7 +116,7 @@ public class MigrationLockContentionTest {
     public static class Second implements MongoMigration {
 
         @Override
-        public void apply() {
+        public void apply(MigrationContext context) {
             RUNS.add("second");
         }
     }
