@@ -2,7 +2,7 @@
 
 include::./includes/attributes.adoc[]
 
-TIP: Describe what the extension does here.
+Write MongoDB migrations as Java code, blocking or reactive, and run them once, in order, with a lock so only one instance runs them. Migrations can run at startup or as a Kubernetes init job.
 
 == Installation
 
@@ -28,4 +28,28 @@ implementation("io.quarkiverse.mongodb-migrations:quarkus-mongodb-migrations:{pr
 
 == Usage
 
-TIP: Add a minimal usage example here.
+Annotate a class with `@Migration` and implement `MongoMigration` (or `ReactiveMongoMigration`):
+
+[source,java]
+----
+@Migration(id = "create-users-email-index", order = 1)
+public class CreateUsersEmailIndex implements MongoMigration {
+
+    @Inject
+    MongoClient client;
+
+    @Override
+    public void apply() {
+        createIndex(client.getDatabase("app"), "users", "email_idx", ascending("email"));
+    }
+}
+----
+
+Then run pending migrations at startup:
+
+[source,properties]
+----
+quarkus.mongodb-migrations.migrate-at-start=true
+----
+
+See the project README for reactive migrations, Kubernetes jobs and the helper functions.
