@@ -458,6 +458,30 @@ Requires JDK 17+, Maven 3.9+, and Docker (tests start MongoDB with Quarkus Dev S
 mvn clean install
 ```
 
+### Native build
+
+The integration tests can also run against a native executable of the test application, as CI does on every pull
+request.
+
+On Linux, build the executable in a container, so no local GraalVM is needed:
+
+```bash
+mvn clean install -Dnative -Dquarkus.native.container-build
+```
+
+On macOS, the `native-macos` profile activates automatically when `-Dnative` is used on a Mac:
+
+```bash
+mvn clean install -Dnative
+```
+
+It also builds the executable with the Mandrel builder image, so no local GraalVM is needed. That executable is a
+Linux one, which macOS can't run, so the profile packages it into a container image (with the
+`quarkus-container-image-docker` extension, added only by this profile, and
+`integration-tests/src/main/docker/Dockerfile.native`), and the native integration tests run that image with Docker.
+
+On both, add `-Dnative.surefire.skip` to skip the JVM tests and only run the native ones.
+
 ## Project layout
 
 | Module | Purpose |

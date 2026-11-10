@@ -95,5 +95,32 @@
                 <quarkus.native.enabled>true</quarkus.native.enabled>
             </properties>
         </profile>
+        <profile>
+            <!--
+                Native builds on macOS: `mvn install -Dnative` activates this profile automatically on a Mac.
+                The executable is built with the Mandrel builder image, like in CI, so no local GraalVM is needed. It is
+                a Linux executable, which macOS can't run, so it is packaged into a container image and the native
+                integration tests run that image with Docker.
+            -->
+            <id>native-macos</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                </os>
+                <property>
+                    <name>native</name>
+                </property>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>io.quarkus</groupId>
+                    <artifactId>quarkus-container-image-docker</artifactId>
+                </dependency>
+            </dependencies>
+            <properties>
+                <quarkus.native.container-build>true</quarkus.native.container-build>
+                <quarkus.container-image.build>true</quarkus.container-image.build>
+            </properties>
+        </profile>
     </profiles>
 </project>
