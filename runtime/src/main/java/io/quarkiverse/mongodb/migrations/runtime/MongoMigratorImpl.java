@@ -127,7 +127,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 }
                 lock.ensureHeld();
                 long start = System.nanoTime();
-                LOG.infof("Running migration %s (order %d)", migration.getId(), migration.getOrder());
+                LOG.infof("Running MongoDB migration %s (order %d)", migration.getId(), migration.getOrder());
                 Attempt attempt = new Attempt();
                 try {
                     if (migration.isTransactional()) {
@@ -158,17 +158,17 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 }
                 OptionalLong changed = attempt.documentsChanged();
                 if (changed.isPresent()) {
-                    LOG.infof("Ran migration %s in %d ms, %d documents changed", migration.getId(), duration.toMillis(),
+                    LOG.infof("Ran MongoDB migration %s in %d ms, %d documents changed", migration.getId(), duration.toMillis(),
                             changed.getAsLong());
                 } else {
-                    LOG.infof("Ran migration %s in %d ms", migration.getId(), duration.toMillis());
+                    LOG.infof("Ran MongoDB migration %s in %d ms", migration.getId(), duration.toMillis());
                 }
                 ran.add(migration.getId());
             }
             if (ran.isEmpty()) {
                 LOG.info("No pending migrations");
             } else {
-                LOG.infof("Ran %d migration(s): %s", ran.size(), ran);
+                LOG.infof("Ran %d MongoDB migration(s): %s", ran.size(), ran);
             }
             return ran;
         }

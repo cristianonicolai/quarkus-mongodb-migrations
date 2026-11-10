@@ -183,7 +183,7 @@ A migration can report how many documents it changed. The count is logged, store
 
 [source,text]
 ----
-Ran migration backfill-order-status in 1204 ms, 4210 documents changed
+Ran MongoDB migration backfill-order-status in 1204 ms, 4210 documents changed
 ----
 
 The <<fields,field, array, `updateMany`, `deleteMany` and `updateEach` helpers>> count their own changes. For changes
@@ -270,8 +270,8 @@ gone (for example once a Kubernetes job is cleaned up):
 [source,js]
 ----
 {
-  migrationId: "backfill-tenant-names",
-  className: "com.example.migrations.BackfillTenantNames",
+  migrationId: "backfill-customer-names",
+  className: "com.example.migrations.BackfillCustomerNames",
   failedAt: ISODate("…"),           // MongoDB server time
   instanceId: "orders-init-x7k2p",
   durationMillis: 1830,
@@ -390,7 +390,7 @@ them, so make that update safe to repeat, for example with a filter that skips d
 if (!context.collectionExists("auditLog")) { ... }       // whether the collection exists
 context.createCollection("auditLog");                    // creates it, unless it already exists
 context.renameCollection("auditLog", "auditEvents");     // renames it, unless the source is already gone
-context.dropCollection("modelExecutionStats");           // drops it, if it exists
+context.dropCollection("legacyReports");                 // drops it, if it exists
 ----
 
 [[indexes]]
@@ -403,7 +403,7 @@ Indexes are identified by name, so creating one that already exists is skipped.
 if (!context.indexExists("users", "email_idx")) { ... }                       // whether a named index exists
 context.createIndex("users", "email_idx", ascending("email"));                 // creates a named index
 context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));   // with options
-context.createTtlIndex("personalAccessTokens", "expires_ttl", "expiresAt", Duration.ofDays(30)); // TTL on a date field
+context.createTtlIndex("sessions", "expires_ttl", "expiresAt", Duration.ofDays(30));         // TTL on a date field
 context.dropIndex("users", "email_idx");                                        // drops it, if it exists
 ----
 
@@ -416,43 +416,43 @@ Each of these returns the number of documents it changed, and adds it to the mig
 [source,java]
 ----
 // Sets a value on every document matching the filter.
-context.setField("tenants", empty(), "deleted", false);
+context.setField("customers", empty(), "deleted", false);
 
 // Sets several values at once.
-context.setFields("plans", eq("_id", "trial"), Map.of("maxThreads", 4, "configurable", true));
+context.setFields("products", eq("category", "books"), Map.of("taxRate", 0, "shippable", true));
 
 // Sets a default where the field is missing or null, leaving existing values alone.
-context.setFieldIfMissing("tenants", "createdAt", Instant.EPOCH);
+context.setFieldIfMissing("customers", "createdAt", Instant.EPOCH);
 
-// The same, limited to documents matching a filter: here, only plans that have maps settings.
-context.setFieldIfMissing("plans", exists("mapsSettings"), "mapsSettings.allowTraffic", false);
+// The same, limited to documents matching a filter: here, only users that have preferences.
+context.setFieldIfMissing("users", exists("preferences"), "preferences.newsletter", false);
 
 // Renames a field in every document that has it.
 context.renameField("users", "mail", "email");
 
 // Removes a field from every document that has it.
-context.removeField("registeredModels", "insightsQueryName");
+context.removeField("employees", "legacyId");
 ----
 
 [[fields-in-arrays]]
 === Fields in arrays
 
-These work on arrays of documents, such as a tenant's `members`. Documents without the array are skipped.
+These work on arrays of documents, such as an order's `items`. Documents without the array are skipped.
 
 [source,java]
 ----
 // Sets a field on every element.
-context.setFieldInArray("tenants", "members", "notified", true);
+context.setFieldInArray("orders", "items", "returned", false);
 
 // Sets a field on the elements that match a filter, written on the element's own fields.
-context.setFieldInArray("tenants", "apiKeys", eq("name", "timefold-platform"), "type", "PLATFORM");
-context.setFieldInArray("tenants", "apiKeys", not(eq("name", "timefold-platform")), "type", "USER");
+context.setFieldInArray("employees", "roles", eq("name", "admin"), "access", "FULL");
+context.setFieldInArray("employees", "roles", not(eq("name", "admin")), "access", "LIMITED");
 
 // Sets a default on the elements where the field is missing or null, leaving existing values alone.
-context.setFieldInArrayIfMissing("tenants", "members", "status", "ACTIVE");
+context.setFieldInArrayIfMissing("orders", "items", "quantity", 1);
 
 // Removes a field from every element that has it.
-context.removeFieldInArray("tenants", "members", "legacyRole");
+context.removeFieldInArray("orders", "items", "legacyCode");
 ----
 
 Element filters can combine conditions with `and`, `or` and `nor`. Arrays nested in arrays aren't covered; use the
@@ -473,9 +473,9 @@ context.updateMany("orders", and(eq("status", "failed"), ne("retry", true)),
 
 // An aggregation pipeline, for updates that use the document's own values:
 // converting a field's type...
-context.updateMany("RunStatistics", empty(), List.of(set("tenantId", new Document("$toString", "$tenantId"))));
+context.updateMany("orders", empty(), List.of(set("customerId", new Document("$toString", "$customerId"))));
 // ...or copying one field to another.
-context.updateMany("plans", empty(), List.of(set("maxThreadsQueued", "$maxConcurrentExecutions")));
+context.updateMany("employees", empty(), List.of(set("displayName", "$name")));
 
 // Deletes every matching document.
 context.deleteMany("auditLog", lt("timestamp", Instant.now().minus(Duration.ofDays(365))));
@@ -490,17 +490,23 @@ differ per document. Return `null` to leave a document unchanged. Documents are 
 
 [source,java]
 ----
-context.updateEach("registeredModels", exists("registrationKey", false),
-        model -> set("registrationKey", UUID.randomUUID().toString()));
+context.updateEach("users", exists("apiToken", false),
+        user -> set("apiToken", UUID.randomUUID().toString()));
 
 // With a projection, to read only the fields needed. It must keep _id: leave it out or include it.
-context.updateEach("reports", exists("modelId"), include("modelId", "modelVersion"),
-        report -> combine(
-                set("dataSets.$[].modelId", report.getString("modelId")),
-                set("dataSets.$[].modelVersion", report.getString("modelVersion")),
-                unset("modelId"),
-                unset("modelVersion")));
+// Here, an order's warehouse and carrier move into each of its shipments.
+context.updateEach("orders", and(exists("warehouse"), exists("shipments.0")), include("warehouse", "carrier"),
+        order -> combine(
+                set("shipments.$[].warehouse", order.getString("warehouse")),
+                set("shipments.$[].carrier", order.getString("carrier")),
+                unset("warehouse"),
+                unset("carrier")));
 ----
+
+An update on `array.$[]` fails on a document without that array, and the migration stops partway, after earlier
+batches were written. Filter on the array, as `exists("shipments.0")` does here: it also skips orders with no
+shipments, which would otherwise lose their warehouse and carrier. Orders left out keep both fields, for a separate
+step to handle.
 
 In a reactive context, `updateEach` returns `Uni<Long>`.
 
@@ -514,15 +520,15 @@ there.
 [[several-databases]]
 === Several databases
 
-When data is split across databases, for example one per tenant, `forEachDatabase` runs an action for each database
+When data is split across databases, for example one per customer, `forEachDatabase` runs an action for each database
 whose name matches, with a context for it. `forEachCollection` does the same for the existing collections of a
 database. MongoDB's own databases (`admin`, `local`, `config`) and `system.*` collections are never included.
 
 [source,java]
 ----
-context.forEachDatabase(name -> isTenantId(name), tenant ->
-        tenant.forEachCollection(name -> name.endsWith("-events"), collection ->
-                tenant.createIndex(collection, "run_id_init_solution_asc", ascending("runId", "initSolution"))));
+context.forEachDatabase(name -> name.startsWith("customer-"), customer ->
+        customer.forEachCollection(name -> name.endsWith("-events"), collection ->
+                customer.createIndex(collection, "user_time_idx", ascending("userId", "timestamp"))));
 ----
 
 Changes made through the database contexts count towards the migration, and in a transactional migration they take
@@ -531,8 +537,8 @@ function returning `Uni<Void>` and visit one database or collection at a time:
 
 [source,java]
 ----
-context.forEachDatabase(name -> isTenantId(name), tenant ->
-        tenant.setFieldIfMissing("settings", "version", 1).replaceWithVoid());
+context.forEachDatabase(name -> name.startsWith("customer-"), customer ->
+        customer.setFieldIfMissing("settings", "version", 1).replaceWithVoid());
 ----
 
 For a single other database, `forDatabase` returns a context for it. Like the contexts of `forEachDatabase`, its
@@ -568,17 +574,17 @@ just before it, seeding data in the old shape, running it, and checking the resu
 MongoMigrator migrator;
 
 @Test
-void backfillsMemberStatus() {
-    migrator.migrateTo("create-tenants");                     // everything before the migration under test
+void backfillsItemQuantity() {
+    migrator.migrateTo("create-orders");                      // everything before the migration under test
 
     MigrationContext context = migrator.context();           // the database the migrations use
-    context.collection("tenants").insertOne(new Document("_id", "acme")
-            .append("members", List.of(new Document("name", "ann"))));
+    context.collection("orders").insertOne(new Document("_id", 1)
+            .append("items", List.of(new Document("sku", "book"))));
 
-    assertEquals(List.of("backfill-member-status"), migrator.migrateTo("backfill-member-status"));
-    assertEquals("ACTIVE", context.collection("tenants").find().first()
-            .getList("members", Document.class).get(0).getString("status"));
-    assertEquals(1L, migrator.status().migration("backfill-member-status").documentsChanged());
+    assertEquals(List.of("backfill-item-quantity"), migrator.migrateTo("backfill-item-quantity"));
+    assertEquals(1, context.collection("orders").find().first()
+            .getList("items", Document.class).get(0).getInteger("quantity"));
+    assertEquals(1L, migrator.status().migration("backfill-item-quantity").documentsChanged());
 }
 ----
 
@@ -597,7 +603,7 @@ A few more patterns:
 [source,java]
 ----
 MigrationContext again = migrator.context();
-new BackfillMemberStatus().apply(again);
+new BackfillItemQuantity().apply(again);
 assertEquals(OptionalLong.of(0), again.documentsChanged());
 ----
 

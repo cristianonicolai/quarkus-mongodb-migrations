@@ -213,7 +213,7 @@ public final class MigrationContext {
 
     /**
      * Sets a field to the same value on every document matching the filter, for example
-     * {@code setField("tenants", empty(), "deleted", false)}. Counts as changed documents.
+     * {@code setField("customers", empty(), "deleted", false)}. Counts as changed documents.
      *
      * @return the number of documents changed
      */
@@ -243,7 +243,7 @@ public final class MigrationContext {
 
     /**
      * Like {@link #setFieldIfMissing(String, String, Object)}, limited to documents matching the filter, for example
-     * {@code setFieldIfMissing("plans", exists("mapsSettings"), "mapsSettings.allowTraffic", false)}.
+     * {@code setFieldIfMissing("users", exists("preferences"), "preferences.newsletter", false)}.
      *
      * @return the number of documents changed
      */
@@ -253,7 +253,7 @@ public final class MigrationContext {
 
     /**
      * Sets a field on every element of an array of documents, for example
-     * {@code setFieldInArray("tenants", "members", "status", "ACTIVE")} sets {@code members[*].status}. Documents
+     * {@code setFieldInArray("orders", "items", "returned", false)} sets {@code items[*].returned}. Documents
      * without the array are skipped. Counts as changed documents.
      *
      * @return the number of documents changed
@@ -264,7 +264,7 @@ public final class MigrationContext {
 
     /**
      * Sets a field on the elements of an array of documents that match the element filter, written on the elements'
-     * own fields, for example {@code setFieldInArray("tenants", "apiKeys", eq("name", "platform"), "type", "PLATFORM")}.
+     * own fields, for example {@code setFieldInArray("employees", "roles", eq("name", "admin"), "access", "FULL")}.
      * Counts as changed documents.
      *
      * @return the number of documents changed
@@ -357,8 +357,8 @@ public final class MigrationContext {
 
     /**
      * Runs an action for each database whose name matches, with a context for that database. Useful when data is
-     * split across databases, for example one per tenant:
-     * {@code forEachDatabase(name -> name.startsWith("tenant-"), tenant -> tenant.setFieldIfMissing("events", "v", 1))}.
+     * split across databases, for example one per customer:
+     * {@code forEachDatabase(name -> name.startsWith("customer-"), db -> db.setFieldIfMissing("events", "v", 1))}.
      * <p>
      * MongoDB's own databases ({@code admin}, {@code local} and {@code config}) are never included. Changes made through
      * the database contexts count towards this migration, and in a transactional migration they take part in its
@@ -396,7 +396,7 @@ public final class MigrationContext {
     /**
      * Updates every document matching the filter with an aggregation pipeline, for updates that use the document's
      * own values, such as converting a field's type or copying one field to another:
-     * {@code updateMany("runs", empty(), List.of(set("tenantId", new Document("$toString", "$tenantId"))))}. Runs in the
+     * {@code updateMany("orders", empty(), List.of(set("customerId", new Document("$toString", "$customerId"))))}. Runs in the
      * transaction of a transactional migration and counts the changed documents automatically. It runs the update as given, so
      * make it safe to
      * repeat for a migration that may be retried, for example with a filter that skips documents already migrated.
