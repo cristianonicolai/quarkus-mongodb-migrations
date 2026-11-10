@@ -57,7 +57,7 @@ Add the dependency:
 | `@Migration` | Marks a migration class: `id` and `order` (both unique), optional `runAlways` and `transactional`. |
 | `MongoMigration` / `ReactiveMongoMigration` | What a migration implements: `apply(context)`, and optionally `rollback(context)`. The reactive one returns `Uni<Void>`. |
 | `MigrationContext` / `ReactiveMigrationContext` | Passed to `apply` and `rollback`: `database()`, `collection(name)`, `client()`, `session()` (transactional migrations), the [helpers](#helpers), `forEachDatabase`/`forEachCollection`, and `recordChanges(...)`. |
-| `MongoMigrator` | Inject it to run pending migrations with `migrate()`. |
+| `MongoMigrator` | Inject it to run migrations (`migrate()`, `migrateTo(id)`), read their state (`status()`, `pending()`), or get the migrations' context (`context()`, `reactiveContext()`), for example in [tests](#testing-migrations). |
 | `MigrationHelpers` / `ReactiveMigrationHelpers` | The helpers as static methods taking a database, for other databases. |
 | `MigrationException` | Thrown when a migration run fails. |
 
@@ -221,7 +221,7 @@ Run pending migrations when the application starts:
 quarkus.mongodb-migrations.migrate-at-start=true
 ```
 
-Or inject `MongoMigrator` and call `migrate()`, which returns the ids of the migrations that ran.
+Or inject `MongoMigrator` and call `migrate()`, which returns the ids of the migrations that ran. `migrateTo(id)` stops after the given migration, `pending()` lists the migrations the next run would run, and `status()` reports the state of every migration and of the lock.
 
 The history and lock are stored in the database configured for the MongoDB client (`quarkus.mongodb.database`), or
 in `quarkus.mongodb-migrations.database` if set. Each applied migration has a history entry:
@@ -420,18 +420,68 @@ The collection, index and `renameField`/`removeField` helpers are also available
 database as their first argument, in `MigrationHelpers` (blocking, on `MongoDatabase`) and `ReactiveMigrationHelpers`
 (returning `Uni`, on `ReactiveMongoDatabase`).
 
-### Testing a migration
+### Testing migrations
 
-A migration can be tested on its own by creating its context directly, for example against a test database:
+Migrations are easiest to test in a `@QuarkusTest`, against the MongoDB that Quarkus Dev Services starts for the
+tests. Turn off migrations at startup for tests, so each test decides when they run:
 
-```java
-MigrationContext context = new MigrationContext(mongoClient, "test-db");
-new BackfillOrderStatus().apply(context);
-assertEquals(OptionalLong.of(4210), context.documentsChanged());
+```properties
+%test.quarkus.mongodb-migrations.migrate-at-start=false
 ```
 
-`new MigrationContext(client, database, session)` creates a context for a transactional migration, and
-`ReactiveMigrationContext` has the same constructors.
+Then inject `MongoMigrator`. A migration that changes existing data is tested by bringing the database to the state
+just before it, seeding data in the old shape, running it, and checking the result:
+
+```java
+@Inject
+MongoMigrator migrator;
+
+@Test
+void backfillsMemberStatus() {
+    migrator.migrateTo("create-tenants");                     // everything before the migration under test
+
+    MigrationContext context = migrator.context();           // the database the migrations use
+    context.collection("tenants").insertOne(new Document("_id", "acme")
+            .append("members", List.of(new Document("name", "ann"))));
+
+    assertEquals(List.of("backfill-member-status"), migrator.migrateTo("backfill-member-status"));
+    assertEquals("ACTIVE", context.collection("tenants").find().first()
+            .getList("members", Document.class).get(0).getString("status"));
+    assertEquals(1L, migrator.status().migration("backfill-member-status").documentsChanged());
+}
+```
+
+`migrateTo` runs the pending migrations up to and including the given one, with the same lock, history and failure
+handling as a normal run, and returns the ids of those that ran. Migrations marked `runAlways` run when they come
+before the given one.
+
+A few more patterns:
+
+- **Everything is applied:** `assertEquals(List.of(), migrator.pending())`, or check one migration through
+  `migrator.status().migration(id)`: whether it is applied, when and by which instance, how many times it ran, how many
+  documents it changed, and its latest failure.
+- **Safe to run again:** call the migration directly a second time and check it changed nothing. This matters most for
+  migrations that use `updateMany`, `deleteMany` or `updateEach`, which aren't safe to repeat on their own:
+
+  ```java
+  MigrationContext again = migrator.context();
+  new BackfillMemberStatus().apply(again);
+  assertEquals(OptionalLong.of(0), again.documentsChanged());
+  ```
+
+- **Rollback:** call `apply` with data that makes it fail, then `rollback`, and check what is left.
+- **Without Quarkus:** a migration can also be run with a context created directly, such as
+  `new MigrationContext(mongoClient, "test-db")`, or `new MigrationContext(client, database, session)` for a
+  transactional migration. `ReactiveMigrationContext` has the same constructors, and `migrator.reactiveContext()`
+  returns one for the migrations' database.
+
+Test classes can share one running application and one MongoDB: Quarkus starts the application once for all
+`@QuarkusTest` classes with the same profile, and Dev Services reuses its MongoDB. The migration history is shared
+with it, so a migration a previous test applied is no longer pending, and `migrateTo` returns an empty list instead of
+running it. Different collections don't help, since the history is one collection for all of them. When a test needs
+a clean state, give it its own database, for example with a test profile that sets `quarkus.mongodb.database` (and
+`quarkus.mongodb-migrations.database`, if you set it), or drop both the migrated data and the migration history
+before it runs, while no other test is using the database.
 
 ## Configuration
 

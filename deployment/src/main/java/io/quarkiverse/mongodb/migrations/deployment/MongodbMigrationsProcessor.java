@@ -151,9 +151,8 @@ class MongodbMigrationsProcessor {
     @BuildStep
     @Record(ExecutionTime.RUNTIME_INIT)
     SyntheticBeanBuildItem migrator(MongodbMigrationsRecorder recorder, MigrationsBuildItem migrations) {
-        // Also exposed as MongoMigratorImpl for the Dev UI, which reads the status through it.
         return SyntheticBeanBuildItem.configure(MongoMigratorImpl.class)
-                .types(MongoMigrator.class, MongoMigratorImpl.class)
+                .types(MongoMigrator.class)
                 .scope(Singleton.class)
                 .setRuntimeInit()
                 .unremovable()

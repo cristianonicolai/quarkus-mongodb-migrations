@@ -22,11 +22,11 @@ import com.mongodb.client.MongoDatabase;
 import io.quarkiverse.mongodb.migrations.Migration;
 import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
+import io.quarkiverse.mongodb.migrations.MigrationsStatus;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
+import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkiverse.mongodb.migrations.ReactiveMigrationContext;
 import io.quarkiverse.mongodb.migrations.ReactiveMongoMigration;
-import io.quarkiverse.mongodb.migrations.runtime.MigrationsStatus;
-import io.quarkiverse.mongodb.migrations.runtime.MongoMigratorImpl;
 import io.quarkus.test.QuarkusExtensionTest;
 import io.smallrye.mutiny.Uni;
 
@@ -46,7 +46,7 @@ public class MigrationChangeCountTest {
     MongoClient client;
 
     @Inject
-    MongoMigratorImpl migrator;
+    MongoMigrator migrator;
 
     @Test
     void recordsTheDocumentsEachMigrationReportsAsChanged() {
