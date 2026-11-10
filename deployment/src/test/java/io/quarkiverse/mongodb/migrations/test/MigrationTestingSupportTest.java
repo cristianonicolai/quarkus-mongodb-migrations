@@ -23,8 +23,8 @@ import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkus.test.QuarkusExtensionTest;
 
 /**
- * The way the README suggests testing a migration: migrate up to just before it, seed data in the old shape, then run
- * it and check the result.
+ * The way the documentation suggests testing a migration: migrate up to just before it, seed data in the old shape,
+ * then run it and check the result.
  * <p>
  * The tests share one database and one migration history, and the first one expects every migration to be pending
  * when it starts. Keep the other tests from running migrations, or it depends on the order the tests run in.

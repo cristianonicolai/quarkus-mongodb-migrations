@@ -44,8 +44,8 @@ import com.mongodb.client.result.UpdateResult;
  * can run again safely: they skip work that is already done, so a migration that failed halfway can be retried.
  * {@link #updateMany(String, Bson, Bson) updateMany}, {@link #deleteMany(String, Bson) deleteMany} and
  * {@link #updateEach(String, Bson, java.util.function.Function) updateEach} run the update they are given, so its
- * author makes it safe to repeat. To work on other databases, use {@link #forEachDatabase(Predicate, Consumer)} or
- * {@link #client()}.
+ * author makes it safe to repeat. To work on other databases, use {@link #forDatabase(String)},
+ * {@link #forEachDatabase(Predicate, Consumer)} or {@link #client()}.
  * <p>
  * In a {@link Migration#transactional() transactional} migration, {@link #session()} returns the transaction's
  * session, the data helpers run in the transaction, and the collection and index helpers refuse to run.
@@ -343,6 +343,16 @@ public final class MigrationContext {
             changed += bulkWrite(target, batch);
         }
         return changed;
+    }
+
+    /**
+     * A context for another database of the same client, for example
+     * {@code forDatabase("audit").setFieldIfMissing("events", "version", 1)}. Changes made through it count towards this
+     * migration, and in a transactional migration they take part in its transaction. The database doesn't have to exist
+     * yet.
+     */
+    public MigrationContext forDatabase(String databaseName) {
+        return new MigrationContext(client, databaseName, session, changes);
     }
 
     /**

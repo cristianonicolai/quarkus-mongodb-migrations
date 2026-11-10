@@ -2,11 +2,52 @@
 
 include::./includes/attributes.adoc[]
 
-Write MongoDB migrations as Java code, blocking or reactive, and run them once, in order, with a lock so only one instance runs them. Migrations can run at startup or as a Kubernetes init job.
+A Quarkus extension for managing MongoDB migrations written as plain Java code.
 
+NOTE: This extension is in early development. Nothing has been released yet, and the API and configuration may still
+change.
+
+[[overview]]
+== Overview
+
+Applications that store data in MongoDB still need to change it over time: create or drop indexes, add TTLs,
+backfill fields, reshape documents, or move data between collections. Each change should run exactly once, in order,
+and only one instance of the application should run it, even when many replicas start at the same time.
+
+This extension handles that for you. It is built specifically for Quarkus and supports MongoDB only, so it can use
+what a Quarkus extension does well instead of working around it.
+
+[[features]]
+== Features
+
+* *Migrations as Java code.* Each migration is a CDI bean, blocking or reactive. It receives a context with the
+  database to migrate, idempotent helpers and the client, and can inject repositories or any other bean.
+* *Checked at build time.* Migrations are discovered from the Jandex index. Duplicate ids, duplicate order numbers,
+  and classes that don't implement a migration interface fail the build.
+* *Run once, in order.* Applied migrations are recorded in a MongoDB collection. Pending ones run in order, and
+  applied ones are skipped, unless a migration is marked to always run.
+* *Safe with many replicas.* A lock stored in MongoDB ensures only one instance runs migrations. Its lease expires
+  on the server clock, so if an instance dies mid-run, another one takes over once the lease runs out.
+* *Kubernetes init job.* With the Quarkus Kubernetes or OpenShift extension, a Job that runs the migrations is
+  generated, and the application waits for it.
+* *Idempotent helpers* for creating and dropping indexes and collections, TTL indexes, and renaming or removing
+  fields, in blocking and reactive variants.
+* *Opt-in transactions.* A migration marked `transactional` runs in a MongoDB transaction, together with its history
+  entry, so both commit or neither does.
+* *Changed-document counts* reported by migrations are logged and stored in the history.
+* *Dev UI card* showing which migrations are applied or pending, their latest failures and the lock holder, with a
+  button to run pending migrations.
+
+Planned:
+
+* Importing migration history from a previous tool, so already applied changes are not run again.
+* A health check.
+
+[[installation]]
 == Installation
 
-To use this extension, add the `io.quarkiverse.mongodb-migrations:quarkus-mongodb-migrations` dependency to your build file.
+To use this extension, add the `io.quarkiverse.mongodb-migrations:quarkus-mongodb-migrations` dependency to your build
+file.
 
 With Maven, add the following to your `pom.xml`:
 
@@ -26,27 +67,502 @@ With Gradle, add the following to your `build.gradle`:
 implementation("io.quarkiverse.mongodb-migrations:quarkus-mongodb-migrations:{project-version}")
 ----
 
-== Usage
+[[api-at-a-glance]]
+== API at a glance
 
-Annotate a class with `@Migration` and implement `MongoMigration` (or `ReactiveMongoMigration`):
+[cols="1,3"]
+|===
+|Type |What it is
+
+|`@Migration`
+|Marks a migration class: `id` and `order` (both unique), optional `runAlways` and `transactional`.
+
+|`MongoMigration` / `ReactiveMongoMigration`
+|What a migration implements: `apply(context)`, and optionally `rollback(context)`. The reactive one returns
+`Uni<Void>`.
+
+|`MigrationContext` / `ReactiveMigrationContext`
+|Passed to `apply` and `rollback`: `database()`, `collection(name)`, `client()`, `session()` (transactional
+migrations), the <<helpers,helpers>>, `forDatabase`, `forEachDatabase`/`forEachCollection`, and `recordChanges(...)`.
+
+|`MongoMigrator`
+|Inject it to run migrations (`migrate()`, `migrateTo(id)`), read their state (`status()`, `pending()`), or get the
+migrations' context (`context()`, `reactiveContext()`), for example in <<testing-migrations,tests>>.
+
+|`MigrationHelpers` / `ReactiveMigrationHelpers`
+|The helpers as static methods taking a database, for other databases.
+
+|`MigrationException`
+|Thrown when a migration run fails.
+|===
+
+The examples below use static imports from the driver's `Filters`, `Updates` and `Indexes` builders.
+
+[[writing-a-migration]]
+== Writing a migration
+
+Annotate a class with `@Migration` and implement `MongoMigration`. The `id` is recorded once the migration is
+applied, and `order` sets the run order. Both must be unique.
+
+`apply` receives a `MigrationContext`: the database to migrate, with helpers that work on it, so a migration needs no
+injected client or database name.
 
 [source,java]
 ----
+import static com.mongodb.client.model.Indexes.ascending;
+
 @Migration(id = "create-users-email-index", order = 1)
 public class CreateUsersEmailIndex implements MongoMigration {
 
     @Override
     public void apply(MigrationContext context) {
-        context.createIndex("users", "email_idx", ascending("email"));
+        context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));
+        context.renameField("users", "mail", "email");
     }
 }
 ----
 
-Then run pending migrations at startup:
+For anything the <<helpers,helpers>> don't cover, the context gives full access to the MongoDB driver:
+
+[source,java]
+----
+MongoDatabase database = context.database();                          // the database being migrated
+MongoCollection<Document> orders = context.collection("orders");      // one of its collections
+orders.aggregate(List.of(match(eq("status", "open")), out("openOrders")));
+context.client().getDatabase("admin").runCommand(new Document("ping", 1));   // the client, for anything else
+----
+
+For a migration that should run in a transaction, see <<transactional-migrations>>.
+
+For reactive code, implement `ReactiveMongoMigration`. It receives a `ReactiveMigrationContext` with the same helpers,
+returning `Uni`:
+
+[source,java]
+----
+@Migration(id = "insert-default-user", order = 2)
+public class InsertDefaultUser implements ReactiveMongoMigration {
+
+    @Override
+    public Uni<Void> apply(ReactiveMigrationContext context) {
+        return context.collection("users")
+                .insertOne(new Document("email", "admin@example.com"))
+                .replaceWithVoid();
+    }
+}
+----
+
+The context works on the database configured for the MongoDB client: `quarkus.mongodb.database`, or the database of
+the client named by `quarkus.mongodb-migrations.mongo-client-name`. Migrations are still CDI beans, so they can also
+inject repositories, other clients or any other bean.
+
+Set `runAlways = true` for a migration that should run on every migration run, even after it has been applied.
+
+WARNING: Never change the `id` of an applied migration, or it runs again.
+
+[[counting-changed-documents]]
+== Counting changed documents
+
+A migration can report how many documents it changed. The count is logged, stored in the history entry as
+`documentsChanged`, and shown in the Dev UI:
+
+[source,text]
+----
+Ran migration backfill-order-status in 1204 ms, 4210 documents changed
+----
+
+The <<fields,field, array, `updateMany`, `deleteMany` and `updateEach` helpers>> count their own changes. For changes
+made with the driver, pass the result to the context:
+
+[source,java]
+----
+context.recordChanges(context.collection("orders").updateMany(eq("status", null), set("status", "open")));
+----
+
+`recordChanges` takes an `UpdateResult`, `DeleteResult`, `InsertOneResult`, `InsertManyResult`, `BulkWriteResult`, or
+a plain number. In a reactive migration, use it in the pipeline, for example `.invoke(context::recordChanges)`.
+
+MongoDB only reports counts in each write's result, so changes that aren't reported can't be counted. A migration that
+reports nothing has no count rather than 0, so it isn't mistaken for one that changed nothing. When a migration that
+isn't transactional fails, the documents it reported before failing are stored in its failure record, showing how much
+it changed before stopping.
+
+[[transactional-migrations]]
+== Transactional migrations
+
+Set `transactional = true` for a migration whose data changes must be all-or-nothing. The extension starts a MongoDB
+transaction, runs the migration in it, and writes the migration's history entry in the same transaction, so both
+commit together or neither does:
+
+[source,java]
+----
+@Migration(id = "backfill-order-status", order = 4, transactional = true)
+public class BackfillOrderStatus implements MongoMigration {
+
+    @Override
+    public void apply(MigrationContext context) {
+        context.collection("orders").updateMany(context.session(), eq("status", null), set("status", "open"));
+        context.renameField("orders", "state", "legacyState");
+    }
+}
+----
+
+* Pass `context.session()` to every driver call. The driver can't attach a session implicitly, so calls without it run
+  outside the transaction. The field, array, `updateMany`, `deleteMany` and `updateEach` helpers use the session
+  automatically.
+* When the migration fails, the transaction is aborted and `rollback` is not called. The abort discards every write
+  made with `context.session()`; writes made without it ran outside the transaction and are kept. The failure is still
+  recorded in the failure collection, which is written outside the transaction.
+* MongoDB's transaction rules apply: a replica set or sharded cluster is required, transactions are limited in time
+  (60 seconds by default) and size, and schema changes are not allowed. The schema helpers (`createIndex`,
+  `dropIndex`, `createCollection`, `dropCollection`, `renameCollection`, `createTtlIndex`) refuse to run in a
+  transactional migration. Put schema changes in a separate migration.
+* Reactive migrations work the same way, with `ReactiveMigrationContext.session()`.
+
+[[failures-and-rollback]]
+== Failures and rollback
+
+A migration that throws, or whose `Uni` fails, stops the run and is not recorded, so it runs again next time. Before
+the run stops, the migration's `rollback` is called with the same context to undo its partial changes. It's optional:
+both interfaces provide a default that does nothing. `rollback` is not called for
+<<transactional-migrations,transactional migrations>>: their transaction is aborted instead.
+
+[source,java]
+----
+@Override
+public void rollback(MigrationContext context) {
+    context.dropIndex("users", "email_idx");
+}
+----
+
+Only the failed migration is rolled back. Migrations that succeeded earlier in the same run stay applied. If
+`rollback` itself fails, its error is attached to the migration failure as a suppressed exception.
+
+For migrations that aren't transactional, rollback is best effort: MongoDB doesn't undo changes made outside a
+transaction, so `rollback` has to undo them itself, and may not manage to. Writing migrations to be safe to re-run (as
+the helpers are) means a retry works even when a rollback couldn't clean up.
+
+Each failed attempt is also recorded in the `migrationFailures` collection, so it can be inspected after the logs are
+gone (for example once a Kubernetes job is cleaned up):
+
+[source,js]
+----
+{
+  migrationId: "backfill-tenant-names",
+  className: "com.example.migrations.BackfillTenantNames",
+  failedAt: ISODate("…"),           // MongoDB server time
+  instanceId: "orders-init-x7k2p",
+  durationMillis: 1830,
+  error: { type: "…", message: "…", stackTrace: "…" },   // first 20 frames, message capped at 2000 characters
+  rollbackError: null,                                   // or { type, message } if the rollback failed too
+  documentsChangedBeforeFailure: 120                     // only if it reported changes, and wasn't transactional
+}
+----
+
+Entries are removed after `failure-retention` (30 days) by a TTL index. Error messages can contain data from the
+failed operation, so anyone who can read the collection can see them. Set `record-failures=false` to turn this off.
+
+[[running-migrations]]
+== Running migrations
+
+Run pending migrations when the application starts:
 
 [source,properties]
 ----
 quarkus.mongodb-migrations.migrate-at-start=true
 ----
 
-See the project README for reactive migrations, Kubernetes jobs and the helper functions.
+Or inject `MongoMigrator` and call `migrate()`, which returns the ids of the migrations that ran. `migrateTo(id)` stops
+after the given migration, `pending()` lists the migrations the next run would run, and `status()` reports the state
+of every migration and of the lock.
+
+The history and lock are stored in the database configured for the MongoDB client (`quarkus.mongodb.database`), or
+in `quarkus.mongodb-migrations.database` if set. Each applied migration has a history entry:
+
+[source,js]
+----
+{
+  _id: "backfill-order-status",       // the migration id
+  order: 4,
+  className: "com.example.migrations.BackfillOrderStatus",   // kept up to date if the class is renamed
+  runAlways: false,
+  transactional: true,
+  appliedAt: ISODate("…"),            // first run, MongoDB server time
+  appliedBy: "orders-init-x7k2p",     // instance-id of the first run
+  lastAppliedAt: ISODate("…"),        // latest run; differs from appliedAt only for runAlways migrations
+  lastAppliedBy: "orders-init-x7k2p",
+  runCount: 1,
+  durationMillis: 1204,               // latest run
+  documentsChanged: 4210              // latest run, only if the migration reported changes
+}
+----
+
+[[running-as-a-kubernetes-job]]
+=== Running as a Kubernetes job
+
+With `quarkus-kubernetes` (or `quarkus-openshift`) in the application, the generated manifests include a Job named
+`<application>-mongodb-migrations-init` that runs the migrations and exits. The application's pods wait for the Job
+to finish, and migrations are disabled in the pods themselves. Keep `migrate-at-start=true`: the Job uses it.
+
+Without those extensions, the same can be done by hand: run the application with `QUARKUS_INIT_AND_EXIT=true` as a
+one-off job, and set `QUARKUS_MONGODB_MIGRATIONS_ENABLED=false` on the regular deployment.
+
+[[dev-ui]]
+== Dev UI
+
+In dev mode, the Dev UI (`/q/dev-ui`) has a *MongoDB Migrations* card with two pages:
+
+* *Status:* every migration with its state (applied, pending, failed or runs always), when and by which instance it
+  was applied, its run count, how many documents it changed, and its latest failure with the rollback outcome. It
+  also shows who holds the lock, and has a button to run the pending migrations without restarting the application.
+  The card's label shows how many migrations are pending.
+* *Migrations:* the migrations found at build time, with their order, id, type and class.
+
+The Dev UI needs an HTTP server in the application, such as the one `quarkus-rest` brings in.
+
+[[helpers]]
+== Helpers
+
+The migration contexts provide helpers that work on the database being migrated. In a `ReactiveMigrationContext`
+they have the same names and arguments, and return a `Uni`.
+
+The collection, index, field and array helpers are safe to run more than once: they skip work that is already done,
+so a migration that failed halfway can be retried. `updateMany`, `deleteMany` and `updateEach` run the update you give
+them, so make that update safe to repeat, for example with a filter that skips documents already migrated.
+
+[[collections]]
+=== Collections
+
+[source,java]
+----
+if (!context.collectionExists("auditLog")) { ... }       // whether the collection exists
+context.createCollection("auditLog");                    // creates it, unless it already exists
+context.renameCollection("auditLog", "auditEvents");     // renames it, unless the source is already gone
+context.dropCollection("modelExecutionStats");           // drops it, if it exists
+----
+
+[[indexes]]
+=== Indexes
+
+Indexes are identified by name, so creating one that already exists is skipped.
+
+[source,java]
+----
+if (!context.indexExists("users", "email_idx")) { ... }                       // whether a named index exists
+context.createIndex("users", "email_idx", ascending("email"));                 // creates a named index
+context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));   // with options
+context.createTtlIndex("personalAccessTokens", "expires_ttl", "expiresAt", Duration.ofDays(30)); // TTL on a date field
+context.dropIndex("users", "email_idx");                                        // drops it, if it exists
+----
+
+[[fields]]
+=== Fields
+
+Each of these returns the number of documents it changed, and adds it to the migration's
+<<counting-changed-documents,changed-document count>>.
+
+[source,java]
+----
+// Sets a value on every document matching the filter.
+context.setField("tenants", empty(), "deleted", false);
+
+// Sets several values at once.
+context.setFields("plans", eq("_id", "trial"), Map.of("maxThreads", 4, "configurable", true));
+
+// Sets a default where the field is missing or null, leaving existing values alone.
+context.setFieldIfMissing("tenants", "createdAt", Instant.EPOCH);
+
+// The same, limited to documents matching a filter: here, only plans that have maps settings.
+context.setFieldIfMissing("plans", exists("mapsSettings"), "mapsSettings.allowTraffic", false);
+
+// Renames a field in every document that has it.
+context.renameField("users", "mail", "email");
+
+// Removes a field from every document that has it.
+context.removeField("registeredModels", "insightsQueryName");
+----
+
+[[fields-in-arrays]]
+=== Fields in arrays
+
+These work on arrays of documents, such as a tenant's `members`. Documents without the array are skipped.
+
+[source,java]
+----
+// Sets a field on every element.
+context.setFieldInArray("tenants", "members", "notified", true);
+
+// Sets a field on the elements that match a filter, written on the element's own fields.
+context.setFieldInArray("tenants", "apiKeys", eq("name", "timefold-platform"), "type", "PLATFORM");
+context.setFieldInArray("tenants", "apiKeys", not(eq("name", "timefold-platform")), "type", "USER");
+
+// Sets a default on the elements where the field is missing or null, leaving existing values alone.
+context.setFieldInArrayIfMissing("tenants", "members", "status", "ACTIVE");
+
+// Removes a field from every element that has it.
+context.removeFieldInArray("tenants", "members", "legacyRole");
+----
+
+Element filters can combine conditions with `and`, `or` and `nor`. Arrays nested in arrays aren't covered; use the
+driver directly with `context.collection(name)` for those.
+
+[[updates-and-deletes]]
+=== Updates and deletes with the driver's builders
+
+`updateMany` and `deleteMany` take the driver's filters and updates directly, for anything the field helpers don't
+cover. Unlike calling the driver yourself, they count their changes and run in the transaction of a transactional
+migration automatically.
+
+[source,java]
+----
+// Any update. The filter skips orders already migrated, so a retried migration doesn't increment twice.
+context.updateMany("orders", and(eq("status", "failed"), ne("retry", true)),
+        combine(set("retry", true), inc("attempts", 1)));
+
+// An aggregation pipeline, for updates that use the document's own values:
+// converting a field's type...
+context.updateMany("RunStatistics", empty(), List.of(set("tenantId", new Document("$toString", "$tenantId"))));
+// ...or copying one field to another.
+context.updateMany("plans", empty(), List.of(set("maxThreadsQueued", "$maxConcurrentExecutions")));
+
+// Deletes every matching document.
+context.deleteMany("auditLog", lt("timestamp", Instant.now().minus(Duration.ofDays(365))));
+----
+
+[[update-each]]
+=== A computed value per document
+
+`updateEach` updates each document matching a filter with an update computed from that document, for values that
+differ per document. Return `null` to leave a document unchanged. Documents are streamed and written in batches of
+1,000, so memory stays flat on large collections.
+
+[source,java]
+----
+context.updateEach("registeredModels", exists("registrationKey", false),
+        model -> set("registrationKey", UUID.randomUUID().toString()));
+
+// With a projection, to read only the fields needed. It must keep _id: leave it out or include it.
+context.updateEach("reports", exists("modelId"), include("modelId", "modelVersion"),
+        report -> combine(
+                set("dataSets.$[].modelId", report.getString("modelId")),
+                set("dataSets.$[].modelVersion", report.getString("modelVersion")),
+                unset("modelId"),
+                unset("modelVersion")));
+----
+
+In a reactive context, `updateEach` returns `Uni<Long>`.
+
+[[helpers-in-transactional-migrations]]
+=== In transactional migrations
+
+The field, array, `updateMany`, `deleteMany` and `updateEach` helpers run in the transaction automatically. The
+collection and index helpers change the schema, which MongoDB doesn't allow in a transaction, so they refuse to run
+there.
+
+[[several-databases]]
+=== Several databases
+
+When data is split across databases, for example one per tenant, `forEachDatabase` runs an action for each database
+whose name matches, with a context for it. `forEachCollection` does the same for the existing collections of a
+database. MongoDB's own databases (`admin`, `local`, `config`) and `system.*` collections are never included.
+
+[source,java]
+----
+context.forEachDatabase(name -> isTenantId(name), tenant ->
+        tenant.forEachCollection(name -> name.endsWith("-events"), collection ->
+                tenant.createIndex(collection, "run_id_init_solution_asc", ascending("runId", "initSolution"))));
+----
+
+Changes made through the database contexts count towards the migration, and in a transactional migration they take
+part in its transaction. Listing databases needs the `listDatabases` privilege. In a reactive context, both take a
+function returning `Uni<Void>` and visit one database or collection at a time:
+
+[source,java]
+----
+context.forEachDatabase(name -> isTenantId(name), tenant ->
+        tenant.setFieldIfMissing("settings", "version", 1).replaceWithVoid());
+----
+
+For a single other database, `forDatabase` returns a context for it. Like the contexts of `forEachDatabase`, its
+changes count towards the migration and take part in the transaction of a transactional migration. The database
+doesn't have to exist yet:
+
+[source,java]
+----
+context.forDatabase("audit").setFieldIfMissing("events", "version", 1);
+----
+
+The collection, index and `renameField`/`removeField` helpers are also available as static methods taking the
+database as their first argument, in `MigrationHelpers` (blocking, on `MongoDatabase`) and `ReactiveMigrationHelpers`
+(returning `Uni`, on `ReactiveMongoDatabase`).
+
+[[testing-migrations]]
+== Testing migrations
+
+Migrations are easiest to test in a `@QuarkusTest`, against the MongoDB that Quarkus Dev Services starts for the
+tests. Turn off migrations at startup for tests, so each test decides when they run:
+
+[source,properties]
+----
+%test.quarkus.mongodb-migrations.migrate-at-start=false
+----
+
+Then inject `MongoMigrator`. A migration that changes existing data is tested by bringing the database to the state
+just before it, seeding data in the old shape, running it, and checking the result:
+
+[source,java]
+----
+@Inject
+MongoMigrator migrator;
+
+@Test
+void backfillsMemberStatus() {
+    migrator.migrateTo("create-tenants");                     // everything before the migration under test
+
+    MigrationContext context = migrator.context();           // the database the migrations use
+    context.collection("tenants").insertOne(new Document("_id", "acme")
+            .append("members", List.of(new Document("name", "ann"))));
+
+    assertEquals(List.of("backfill-member-status"), migrator.migrateTo("backfill-member-status"));
+    assertEquals("ACTIVE", context.collection("tenants").find().first()
+            .getList("members", Document.class).get(0).getString("status"));
+    assertEquals(1L, migrator.status().migration("backfill-member-status").documentsChanged());
+}
+----
+
+`migrateTo` runs the pending migrations up to and including the given one, with the same lock, history and failure
+handling as a normal run, and returns the ids of those that ran. Migrations marked `runAlways` run when they come
+before the given one.
+
+A few more patterns:
+
+* *Everything is applied:* `assertEquals(List.of(), migrator.pending())`, or check one migration through
+  `migrator.status().migration(id)`: whether it is applied, when and by which instance, how many times it ran, how many
+  documents it changed, and its latest failure.
+* *Safe to run again:* call the migration directly a second time and check it changed nothing. This matters most for
+  migrations that use `updateMany`, `deleteMany` or `updateEach`, which aren't safe to repeat on their own:
++
+[source,java]
+----
+MigrationContext again = migrator.context();
+new BackfillMemberStatus().apply(again);
+assertEquals(OptionalLong.of(0), again.documentsChanged());
+----
+
+* *Rollback:* call `apply` with data that makes it fail, then `rollback`, and check what is left.
+* *Without Quarkus:* a migration can also be run with a context created directly, such as
+  `new MigrationContext(mongoClient, "test-db")`, or `new MigrationContext(client, database, session)` for a
+  transactional migration. `ReactiveMigrationContext` has the same constructors, and `migrator.reactiveContext()`
+  returns one for the migrations' database.
+
+Test classes can share one running application and one MongoDB: Quarkus starts the application once for all
+`@QuarkusTest` classes with the same profile, and Dev Services reuses its MongoDB. The migration history is shared
+with it, so a migration a previous test applied is no longer pending, and `migrateTo` returns an empty list instead of
+running it. Different collections don't help, since the history is one collection for all of them. When a test needs
+a clean state, give it its own database, for example with a test profile that sets `quarkus.mongodb.database` (and
+`quarkus.mongodb-migrations.database`, if you set it), or drop both the migrated data and the migration history
+before it runs, while no other test is using the database.
+
+[[configuration]]
+== Configuration
+
+All properties are listed in the xref:config-reference.adoc[Configuration Reference].
