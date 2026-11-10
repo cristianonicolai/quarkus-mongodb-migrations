@@ -510,8 +510,8 @@ mvn clean install
 
 ### Native build
 
-The integration tests can also run against a native executable of the test application, as CI does on every pull
-request.
+The integration tests can also run against a native executable of the test application. In CI, run the
+**Native Tests** workflow manually from the Actions tab, on the branch to test.
 
 On Linux, build the executable in a container, so no local GraalVM is needed:
 
