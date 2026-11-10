@@ -41,11 +41,12 @@ public class MigrationRollbackTest {
     private static volatile boolean failReactive;
     private static volatile boolean failBlocking;
     private static volatile boolean failBlockingRollback;
+    private static volatile boolean failWithError = true;
     private static final List<String> ROLLBACKS = new ArrayList<>();
 
     @RegisterExtension
     static final QuarkusExtensionTest test = new QuarkusExtensionTest()
-            .withApplicationRoot(jar -> jar.addClasses(ReactiveStep.class, BlockingStep.class))
+            .withApplicationRoot(jar -> jar.addClasses(ReactiveStep.class, BlockingStep.class, ErrorStep.class))
             .overrideConfigKey("quarkus.mongodb.database", DATABASE)
             .overrideConfigKey("quarkus.mongodb-migrations.instance-id", "rollback-test")
             .overrideConfigKey("quarkus.mongodb-migrations.failure-retention", "7d");
@@ -78,12 +79,19 @@ public class MigrationRollbackTest {
         assertEquals(List.of("reactive-step"), applied(database), "the earlier migration stays applied");
 
         failBlocking = false;
-        assertEquals(List.of("blocking-step"), migrator.migrate());
+        AssertionError error = assertThrows(AssertionError.class, migrator::migrate, "an Error propagates unwrapped");
+        assertEquals("error failure", error.getMessage());
+        assertEquals(List.of("reactive-step", "blocking-step", "error-step"), ROLLBACKS, "an Error is rolled back too");
+        assertEquals(List.of("reactive-step", "blocking-step"), applied(database));
         assertTrue(indexExists(database, "items", "name_idx"));
 
+        failWithError = false;
+        assertEquals(List.of("error-step"), migrator.migrate());
+
+        // Ordered by _id: ObjectIds created by one process increase, even within the same millisecond.
         List<Document> failures = database.getCollection("migrationFailures").find()
-                .sort(Sorts.ascending("failedAt")).into(new ArrayList<>());
-        assertEquals(2, failures.size(), "one document per failed attempt");
+                .sort(Sorts.ascending("_id")).into(new ArrayList<>());
+        assertEquals(3, failures.size(), "one document per failed attempt");
 
         Document reactive = failures.get(0);
         assertEquals("reactive-step", reactive.getString("migrationId"));
@@ -100,6 +108,10 @@ public class MigrationRollbackTest {
         assertEquals("blocking-step", blocking.getString("migrationId"));
         assertEquals("blocking failure", blocking.get("error", Document.class).getString("message"));
         assertEquals("rollback failure", blocking.get("rollbackError", Document.class).getString("message"));
+
+        Document errorFailure = failures.get(2);
+        assertEquals("error-step", errorFailure.getString("migrationId"));
+        assertEquals(AssertionError.class.getName(), errorFailure.get("error", Document.class).getString("type"));
 
         Document ttlIndex = database.getCollection("migrationFailures").listIndexes().into(new ArrayList<>()).stream()
                 .filter(index -> "failedAt_ttl".equals(index.getString("name")))
@@ -154,6 +166,22 @@ public class MigrationRollbackTest {
             if (failBlockingRollback) {
                 throw new IllegalStateException("rollback failure");
             }
+        }
+    }
+
+    @Migration(id = "error-step", order = 3)
+    public static class ErrorStep implements MongoMigration {
+
+        @Override
+        public void apply() {
+            if (failWithError) {
+                throw new AssertionError("error failure");
+            }
+        }
+
+        @Override
+        public void rollback() {
+            ROLLBACKS.add("error-step");
         }
     }
 }

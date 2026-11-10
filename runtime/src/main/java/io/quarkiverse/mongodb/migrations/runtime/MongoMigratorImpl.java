@@ -36,14 +36,17 @@ public final class MongoMigratorImpl implements MongoMigrator {
     private static final Logger LOG = Logger.getLogger(MongoMigratorImpl.class);
 
     private final List<MigrationDescriptor> migrations;
+    private final ClassLoader applicationClassLoader;
     private final MongoDatabase database;
     private final MongodbMigrationsConfig config;
 
     /**
      * @param migrations the migrations, sorted by order
      */
-    public MongoMigratorImpl(List<MigrationDescriptor> migrations, MongoDatabase database, MongodbMigrationsConfig config) {
+    public MongoMigratorImpl(List<MigrationDescriptor> migrations, ClassLoader applicationClassLoader,
+            MongoDatabase database, MongodbMigrationsConfig config) {
         this.migrations = migrations;
+        this.applicationClassLoader = applicationClassLoader;
         this.database = database;
         this.config = config;
     }
@@ -69,13 +72,15 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 LOG.infof("Running migration %s (order %d)", migration.getId(), migration.getOrder());
                 try {
                     run(migration);
-                } catch (MigrationException e) {
+                } catch (Throwable failure) {
                     if (failureLog != null) {
-                        Throwable rollbackError = e.getSuppressed().length > 0 ? e.getSuppressed()[0] : null;
-                        failureLog.record(migration, e.getCause() != null ? e.getCause() : e, rollbackError,
-                                Duration.ofNanos(System.nanoTime() - start));
+                        Throwable error = failure instanceof MigrationException && failure.getCause() != null
+                                ? failure.getCause()
+                                : failure;
+                        Throwable rollbackError = failure.getSuppressed().length > 0 ? failure.getSuppressed()[0] : null;
+                        failureLog.record(migration, error, rollbackError, Duration.ofNanos(System.nanoTime() - start));
                     }
-                    throw e;
+                    throw failure;
                 }
                 // Record even if the lock was lost meanwhile: the work is done, and the next ensureHeld() stops the run.
                 record(history, migration, Duration.ofNanos(System.nanoTime() - start));
@@ -121,9 +126,13 @@ public final class MongoMigratorImpl implements MongoMigrator {
         }
     }
 
-    private static void run(MigrationDescriptor migration) {
+    private void run(MigrationDescriptor migration) {
         Class<?> migrationClass = loadClass(migration.getClassName());
         try (InstanceHandle<?> handle = Arc.container().instance(migrationClass)) {
+            if (!handle.isAvailable()) {
+                throw new MigrationException("Migration " + migration.getId() + " (" + migration.getClassName()
+                        + ") is not available as a CDI bean");
+            }
             Object instance = handle.get();
             try {
                 if (migration.isReactive()) {
@@ -131,6 +140,10 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 } else {
                     ((MongoMigration) instance).apply();
                 }
+            } catch (Error e) {
+                // Errors (an AssertionError, OutOfMemoryError, ...) still get a rollback, but propagate unwrapped.
+                rollback(migration, instance, e);
+                throw e;
             } catch (RuntimeException e) {
                 MigrationException failure = new MigrationException("Migration " + migration.getId() + " failed", e);
                 rollback(migration, instance, failure);
@@ -142,7 +155,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
     /**
      * Rolls back a failed migration. A rollback failure is attached to the migration failure rather than replacing it.
      */
-    private static void rollback(MigrationDescriptor migration, Object instance, MigrationException failure) {
+    private static void rollback(MigrationDescriptor migration, Object instance, Throwable failure) {
         try {
             if (migration.isReactive()) {
                 ((ReactiveMongoMigration) instance).rollback().await().indefinitely();
@@ -150,7 +163,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 ((MongoMigration) instance).rollback();
             }
             LOG.infof("Rolled back failed migration %s", migration.getId());
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
             LOG.errorf(e, "Rollback of failed migration %s also failed", migration.getId());
             failure.addSuppressed(e);
         }
@@ -176,9 +189,9 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 new UpdateOptions().upsert(true));
     }
 
-    private static Class<?> loadClass(String className) {
+    private Class<?> loadClass(String className) {
         try {
-            return Class.forName(className, false, Thread.currentThread().getContextClassLoader());
+            return Class.forName(className, false, applicationClassLoader);
         } catch (ClassNotFoundException e) {
             throw new MigrationException("Migration class " + className + " not found", e);
         }
