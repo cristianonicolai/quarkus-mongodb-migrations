@@ -52,105 +52,105 @@ public class MigrationContextDataOperationsTest {
     @Test
     void setFieldAndSetFieldsUpdateMatchingDocuments(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> tenants = context.collection("tenants");
-        tenants.insertMany(List.of(
+        MongoCollection<Document> customers = context.collection("customers");
+        customers.insertMany(List.of(
                 new Document("_id", 1).append("plan", "basic"),
                 new Document("_id", 2).append("plan", "basic"),
                 new Document("_id", 3).append("plan", "enterprise")));
 
-        assertEquals(2, context.setField("tenants", eq("plan", "basic"), "tier", "small"));
-        assertEquals(3, context.setFields("tenants", empty(), Map.of("deleted", false, "version", 2)));
+        assertEquals(2, context.setField("customers", eq("plan", "basic"), "tier", "small"));
+        assertEquals(3, context.setFields("customers", empty(), Map.of("deleted", false, "version", 2)));
 
-        assertEquals("small", tenants.find(eq("_id", 1)).first().getString("tier"));
-        assertNull(tenants.find(eq("_id", 3)).first().getString("tier"));
-        assertEquals(3, tenants.countDocuments(Document.parse("{deleted: false, version: 2}")));
+        assertEquals("small", customers.find(eq("_id", 1)).first().getString("tier"));
+        assertNull(customers.find(eq("_id", 3)).first().getString("tier"));
+        assertEquals(3, customers.countDocuments(Document.parse("{deleted: false, version: 2}")));
         assertEquals(OptionalLong.of(5), context.documentsChanged());
     }
 
     @Test
     void setFieldIfMissingOnlyFillsMissingOrNullValues(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> plans = context.collection("plans");
-        plans.insertMany(List.of(
-                new Document("_id", "kept").append("maxThreads", 8).append("mapsSettings", new Document()),
-                new Document("_id", "null").append("maxThreads", null),
+        MongoCollection<Document> users = context.collection("users");
+        users.insertMany(List.of(
+                new Document("_id", "kept").append("pageSize", 8).append("preferences", new Document()),
+                new Document("_id", "null").append("pageSize", null),
                 new Document("_id", "missing")));
 
-        assertEquals(2, context.setFieldIfMissing("plans", "maxThreads", 1));
-        assertEquals(0, context.setFieldIfMissing("plans", "maxThreads", 1), "safe to run again");
-        assertEquals(8, plans.find(eq("_id", "kept")).first().getInteger("maxThreads"));
-        assertEquals(1, plans.find(eq("_id", "missing")).first().getInteger("maxThreads"));
+        assertEquals(2, context.setFieldIfMissing("users", "pageSize", 1));
+        assertEquals(0, context.setFieldIfMissing("users", "pageSize", 1), "safe to run again");
+        assertEquals(8, users.find(eq("_id", "kept")).first().getInteger("pageSize"));
+        assertEquals(1, users.find(eq("_id", "missing")).first().getInteger("pageSize"));
 
-        assertEquals(1, context.setFieldIfMissing("plans", exists("mapsSettings"), "mapsSettings.allowTraffic", false));
-        assertFalse(plans.find(eq("_id", "missing")).first().containsKey("mapsSettings"), "filtered out");
+        assertEquals(1, context.setFieldIfMissing("users", exists("preferences"), "preferences.newsletter", false));
+        assertFalse(users.find(eq("_id", "missing")).first().containsKey("preferences"), "filtered out");
     }
 
     @Test
     void setFieldInArrayUpdatesEveryElementAndSkipsDocumentsWithoutTheArray(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> tenants = context.collection("tenants");
-        tenants.insertMany(List.of(
-                new Document("_id", 1).append("members", List.of(new Document("name", "a"), new Document("name", "b"))),
-                new Document("_id", 2).append("members", List.of()),
+        MongoCollection<Document> customers = context.collection("customers");
+        customers.insertMany(List.of(
+                new Document("_id", 1).append("contacts", List.of(new Document("name", "a"), new Document("name", "b"))),
+                new Document("_id", 2).append("contacts", List.of()),
                 new Document("_id", 3)));
 
-        assertEquals(1, context.setFieldInArray("tenants", "members", "notified", true));
+        assertEquals(1, context.setFieldInArray("customers", "contacts", "notified", true));
 
-        List<Document> members = tenants.find(eq("_id", 1)).first().getList("members", Document.class);
-        assertTrue(members.stream().allMatch(member -> member.getBoolean("notified")));
-        assertFalse(tenants.find(eq("_id", 3)).first().containsKey("members"));
+        List<Document> contacts = customers.find(eq("_id", 1)).first().getList("contacts", Document.class);
+        assertTrue(contacts.stream().allMatch(contact -> contact.getBoolean("notified")));
+        assertFalse(customers.find(eq("_id", 3)).first().containsKey("contacts"));
     }
 
     @Test
     void setFieldInArrayWithAnElementFilterOnlyUpdatesMatchingElements(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> tenants = context.collection("tenants");
-        tenants.insertOne(new Document("_id", 1).append("apiKeys", List.of(
-                new Document("name", "timefold-platform"),
-                new Document("name", "ci"),
-                new Document("name", "local"))));
+        MongoCollection<Document> customers = context.collection("customers");
+        customers.insertOne(new Document("_id", 1).append("devices", List.of(
+                new Document("name", "laptop"),
+                new Document("name", "phone"),
+                new Document("name", "tablet"))));
 
-        context.setFieldInArray("tenants", "apiKeys", eq("name", "timefold-platform"), "type", "PLATFORM");
-        context.setFieldInArray("tenants", "apiKeys", not(eq("name", "timefold-platform")), "type", "USER");
+        context.setFieldInArray("customers", "devices", eq("name", "laptop"), "type", "COMPANY");
+        context.setFieldInArray("customers", "devices", not(eq("name", "laptop")), "type", "PERSONAL");
 
-        assertEquals(List.of("PLATFORM", "USER", "USER"), tenants.find().first().getList("apiKeys", Document.class)
-                .stream().map(key -> key.getString("type")).toList());
+        assertEquals(List.of("COMPANY", "PERSONAL", "PERSONAL"), customers.find().first().getList("devices", Document.class)
+                .stream().map(device -> device.getString("type")).toList());
     }
 
     @Test
     void setFieldInArrayIfMissingKeepsExistingValues(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> tenants = context.collection("tenants");
-        tenants.insertMany(List.of(
-                new Document("_id", 1).append("members", List.of(
+        MongoCollection<Document> customers = context.collection("customers");
+        customers.insertMany(List.of(
+                new Document("_id", 1).append("contacts", List.of(
                         new Document("name", "a").append("status", "INVITED"),
                         new Document("name", "b"))),
-                new Document("_id", 2).append("members", List.of(new Document("name", "c").append("status", "INVITED"))),
+                new Document("_id", 2).append("contacts", List.of(new Document("name", "c").append("status", "INVITED"))),
                 new Document("_id", 3)));
 
-        assertEquals(1, context.setFieldInArrayIfMissing("tenants", "members", "status", "ACTIVE"));
-        assertEquals(0, context.setFieldInArrayIfMissing("tenants", "members", "status", "ACTIVE"), "safe to run again");
+        assertEquals(1, context.setFieldInArrayIfMissing("customers", "contacts", "status", "ACTIVE"));
+        assertEquals(0, context.setFieldInArrayIfMissing("customers", "contacts", "status", "ACTIVE"), "safe to run again");
 
-        assertEquals(List.of("INVITED", "ACTIVE"), tenants.find(eq("_id", 1)).first().getList("members", Document.class)
-                .stream().map(member -> member.getString("status")).toList());
-        assertEquals("INVITED", tenants.find(eq("_id", 2)).first().getList("members", Document.class).get(0)
+        assertEquals(List.of("INVITED", "ACTIVE"), customers.find(eq("_id", 1)).first().getList("contacts", Document.class)
+                .stream().map(contact -> contact.getString("status")).toList());
+        assertEquals("INVITED", customers.find(eq("_id", 2)).first().getList("contacts", Document.class).get(0)
                 .getString("status"));
     }
 
     @Test
     void removeFieldInArrayRemovesTheFieldFromElementsThatHaveIt(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> tenants = context.collection("tenants");
-        tenants.insertMany(List.of(
-                new Document("_id", 1).append("members", List.of(
-                        new Document("name", "a").append("legacyRole", "admin"),
+        MongoCollection<Document> customers = context.collection("customers");
+        customers.insertMany(List.of(
+                new Document("_id", 1).append("contacts", List.of(
+                        new Document("name", "a").append("legacyCode", "admin"),
                         new Document("name", "b"))),
-                new Document("_id", 2).append("members", List.of(new Document("name", "c")))));
+                new Document("_id", 2).append("contacts", List.of(new Document("name", "c")))));
 
-        assertEquals(1, context.removeFieldInArray("tenants", "members", "legacyRole"));
+        assertEquals(1, context.removeFieldInArray("customers", "contacts", "legacyCode"));
 
-        assertTrue(tenants.find(eq("_id", 1)).first().getList("members", Document.class).stream()
-                .noneMatch(member -> member.containsKey("legacyRole")));
+        assertTrue(customers.find(eq("_id", 1)).first().getList("contacts", Document.class).stream()
+                .noneMatch(contact -> contact.containsKey("legacyCode")));
     }
 
     @Test
@@ -158,9 +158,9 @@ public class MigrationContextDataOperationsTest {
         MigrationContext context = context(info);
 
         assertThrows(IllegalArgumentException.class,
-                () -> context.setFieldInArray("tenants", "members", expr(new Document("$eq", List.of(1, 1))), "a", 1));
+                () -> context.setFieldInArray("customers", "contacts", expr(new Document("$eq", List.of(1, 1))), "a", 1));
         assertThrows(IllegalArgumentException.class,
-                () -> context.setFieldInArray("tenants", "members", empty(), "a", 1));
+                () -> context.setFieldInArray("customers", "contacts", empty(), "a", 1));
     }
 
     @Test
@@ -240,17 +240,17 @@ public class MigrationContextDataOperationsTest {
     void reactiveHelpersBehaveTheSame(TestInfo info) {
         String database = databaseName(info);
         ReactiveMigrationContext context = new ReactiveMigrationContext(reactiveClient, database);
-        MongoCollection<Document> tenants = client.getDatabase(database).getCollection("tenants");
-        tenants.insertMany(List.of(
-                new Document("_id", 1).append("members", List.of(
+        MongoCollection<Document> customers = client.getDatabase(database).getCollection("customers");
+        customers.insertMany(List.of(
+                new Document("_id", 1).append("contacts", List.of(
                         new Document("status", "INVITED"), new Document())),
                 new Document("_id", 2)));
         client.getDatabase(database).getCollection("numbers")
                 .insertMany(IntStream.range(0, 1500).mapToObj(i -> new Document("_id", i)).toList());
 
-        assertEquals(2L, context.setField("tenants", empty(), "deleted", false).await().indefinitely());
-        assertEquals(2L, context.setFieldIfMissing("tenants", "plan", "basic").await().indefinitely());
-        assertEquals(1L, context.setFieldInArrayIfMissing("tenants", "members", "status", "ACTIVE").await().indefinitely());
+        assertEquals(2L, context.setField("customers", empty(), "deleted", false).await().indefinitely());
+        assertEquals(2L, context.setFieldIfMissing("customers", "plan", "basic").await().indefinitely());
+        assertEquals(1L, context.setFieldInArrayIfMissing("customers", "contacts", "status", "ACTIVE").await().indefinitely());
         assertEquals(1500L, context.updateEach("numbers", empty(), document -> set("seen", true)).await().indefinitely());
         assertEquals(OptionalLong.of(2 + 2 + 1 + 1500), context.documentsChanged());
     }
@@ -279,31 +279,32 @@ public class MigrationContextDataOperationsTest {
 
     @Test
     void forEachDatabaseAndCollectionVisitOnlyMatchingOnes(TestInfo info) {
-        List<String> tenants = List.of(UUID.randomUUID().toString(), UUID.randomUUID().toString());
-        for (String database : List.of(tenants.get(0), tenants.get(1), "not-a-tenant")) {
+        List<String> customers = List.of(UUID.randomUUID().toString(), UUID.randomUUID().toString());
+        for (String database : List.of(customers.get(0), customers.get(1), "not-a-customer")) {
             for (String collection : List.of("a-events", "b-events", "settings")) {
-                client.getDatabase(database).getCollection(collection).insertOne(new Document("runId", 1));
+                client.getDatabase(database).getCollection(collection).insertOne(new Document("orderId", 1));
             }
         }
         MigrationContext context = context(info);
 
         List<String> visited = new ArrayList<>();
         context.forEachDatabase(name -> true, database -> visited.add(database.database().getName()));
-        context.forEachDatabase(MigrationContextDataOperationsTest::isUuid, tenant -> tenant.forEachCollection(
-                name -> name.endsWith("-events"), collection -> tenant.createIndex(collection, "run_idx", ascending("runId"))));
+        context.forEachDatabase(MigrationContextDataOperationsTest::isUuid, customer -> customer.forEachCollection(
+                name -> name.endsWith("-events"),
+                collection -> customer.createIndex(collection, "order_idx", ascending("orderId"))));
         context.forEachDatabase(MigrationContextDataOperationsTest::isUuid,
-                tenant -> tenant.setField("settings", empty(), "migrated", true));
+                customer -> customer.setField("settings", empty(), "migrated", true));
 
-        assertTrue(visited.containsAll(tenants) && visited.contains("not-a-tenant"));
+        assertTrue(visited.containsAll(customers) && visited.contains("not-a-customer"));
         assertTrue(visited.stream().noneMatch(name -> List.of("admin", "local", "config").contains(name)),
                 "MongoDB's own databases are skipped: " + visited);
-        for (String tenant : tenants) {
-            MigrationContext tenantContext = new MigrationContext(client, tenant);
-            assertTrue(tenantContext.indexExists("a-events", "run_idx"));
-            assertTrue(tenantContext.indexExists("b-events", "run_idx"));
-            assertFalse(tenantContext.indexExists("settings", "run_idx"));
+        for (String customer : customers) {
+            MigrationContext customerContext = new MigrationContext(client, customer);
+            assertTrue(customerContext.indexExists("a-events", "order_idx"));
+            assertTrue(customerContext.indexExists("b-events", "order_idx"));
+            assertFalse(customerContext.indexExists("settings", "order_idx"));
         }
-        assertFalse(new MigrationContext(client, "not-a-tenant").indexExists("a-events", "run_idx"));
+        assertFalse(new MigrationContext(client, "not-a-customer").indexExists("a-events", "order_idx"));
         assertEquals(OptionalLong.of(2), context.documentsChanged(), "changes in each database count for the migration");
     }
 
@@ -334,39 +335,40 @@ public class MigrationContextDataOperationsTest {
     @Test
     void updateManyAndDeleteManyCountTheirChanges(TestInfo info) {
         MigrationContext context = context(info);
-        MongoCollection<Document> runs = context.collection("runs");
-        runs.insertMany(List.of(
-                new Document("_id", 1).append("tenantId", 7).append("status", "done"),
-                new Document("_id", 2).append("tenantId", 8).append("status", "failed"),
-                new Document("_id", 3).append("tenantId", 9).append("status", "failed")));
+        MongoCollection<Document> orders = context.collection("orders");
+        orders.insertMany(List.of(
+                new Document("_id", 1).append("customerId", 7).append("status", "done"),
+                new Document("_id", 2).append("customerId", 8).append("status", "failed"),
+                new Document("_id", 3).append("customerId", 9).append("status", "failed")));
 
-        assertEquals(3, context.updateMany("runs", empty(), List.of(set("tenantId", new Document("$toString", "$tenantId")))));
-        assertEquals(3, context.updateMany("runs", empty(), List.of(set("previousStatus", "$status"))));
-        assertEquals(2, context.updateMany("runs", eq("status", "failed"), set("retry", true)));
-        assertEquals(1, context.deleteMany("runs", eq("_id", 3)));
+        assertEquals(3,
+                context.updateMany("orders", empty(), List.of(set("customerId", new Document("$toString", "$customerId")))));
+        assertEquals(3, context.updateMany("orders", empty(), List.of(set("previousStatus", "$status"))));
+        assertEquals(2, context.updateMany("orders", eq("status", "failed"), set("retry", true)));
+        assertEquals(1, context.deleteMany("orders", eq("_id", 3)));
 
-        Document run = runs.find(eq("_id", 1)).first();
-        assertEquals("7", run.getString("tenantId"), "converted to a string");
-        assertEquals("done", run.getString("previousStatus"), "copied from another field");
-        assertEquals(2, runs.countDocuments());
+        Document order = orders.find(eq("_id", 1)).first();
+        assertEquals("7", order.getString("customerId"), "converted to a string");
+        assertEquals("done", order.getString("previousStatus"), "copied from another field");
+        assertEquals(2, orders.countDocuments());
         assertEquals(OptionalLong.of(3 + 3 + 2 + 1), context.documentsChanged());
     }
 
     @Test
     void reactiveIteratorsAndWritesBehaveTheSame(TestInfo info) {
-        String tenant = UUID.randomUUID().toString();
-        client.getDatabase(tenant).getCollection("x-events").insertMany(List.of(
+        String customer = UUID.randomUUID().toString();
+        client.getDatabase(customer).getCollection("x-events").insertMany(List.of(
                 new Document("_id", 1).append("n", 1), new Document("_id", 2).append("n", 2)));
         ReactiveMigrationContext context = new ReactiveMigrationContext(reactiveClient, databaseName(info));
 
-        context.forEachDatabase(tenant::equals, database -> database.forEachCollection(
+        context.forEachDatabase(customer::equals, database -> database.forEachCollection(
                 name -> name.endsWith("-events"),
                 collection -> database.updateMany(collection, empty(), List.of(set("label", new Document("$toString", "$n"))))
                         .chain(() -> database.deleteMany(collection, eq("_id", 2)))
                         .replaceWithVoid()))
                 .await().indefinitely();
 
-        MongoCollection<Document> events = client.getDatabase(tenant).getCollection("x-events");
+        MongoCollection<Document> events = client.getDatabase(customer).getCollection("x-events");
         assertEquals("1", events.find().first().getString("label"));
         assertEquals(1, events.countDocuments());
         assertEquals(OptionalLong.of(2 + 1), context.documentsChanged());

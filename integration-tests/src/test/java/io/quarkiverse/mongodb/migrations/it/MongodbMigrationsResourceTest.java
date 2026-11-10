@@ -24,8 +24,8 @@ public class MongodbMigrationsResourceTest {
     public void runsMigrationsAtStartup() {
         given().when().get("/mongodb-migrations/applied")
                 .then().statusCode(200)
-                .body(is("create-users-email-index,insert-default-user,seed-and-backfill-tenants,transactional-orders,"
-                        + "reactive-transactional-backfill,index-tenant-event-collections,fails-on-demand,"
+                .body(is("create-users-email-index,insert-default-user,seed-and-backfill-employees,transactional-orders,"
+                        + "reactive-transactional-backfill,index-customer-event-collections,fails-on-demand,"
                         + "fails-on-demand-transactional"));
         given().when().get("/mongodb-migrations/users/count")
                 .then().statusCode(200)
@@ -36,17 +36,17 @@ public class MongodbMigrationsResourceTest {
     }
 
     @Test
-    public void fieldArrayAndUpdateEachHelpersChangedTheTenants() {
-        given().when().get("/mongodb-migrations/documents/tenants")
+    public void fieldArrayAndUpdateEachHelpersChangedTheEmployees() {
+        given().when().get("/mongodb-migrations/documents/employees")
                 .then().statusCode(200)
-                .body("_id", contains("acme", "globex"))
-                .body("find { it._id == 'acme' }.members.status", contains("INVITED", "ACTIVE"))
-                .body("find { it._id == 'acme' }.members.legacyRole", everyItem(nullValue()))
-                .body("find { it._id == 'acme' }.apiKeys.type", contains("PLATFORM", "USER"))
-                .body("find { it._id == 'acme' }.deleted", is(false))
-                .body("find { it._id == 'globex' }.deleted", is(true))
-                .body("find { it._id == 'globex' }.members.status", contains("ACTIVE"))
-                .body("memberCount", contains(2, 1));
+                .body("_id", contains("ann", "bob"))
+                .body("find { it._id == 'ann' }.roles.status", contains("PENDING", "ACTIVE"))
+                .body("find { it._id == 'ann' }.roles.legacyCode", everyItem(nullValue()))
+                .body("find { it._id == 'ann' }.devices.type", contains("COMPANY", "PERSONAL"))
+                .body("find { it._id == 'ann' }.deleted", is(false))
+                .body("find { it._id == 'bob' }.deleted", is(true))
+                .body("find { it._id == 'bob' }.roles.status", contains("ACTIVE"))
+                .body("roleCount", contains(2, 1));
     }
 
     @Test
@@ -65,25 +65,25 @@ public class MongodbMigrationsResourceTest {
     public void historyRecordsChangeCountsAndTransactions() {
         given().when().get("/mongodb-migrations/documents/migrationHistory")
                 .then().statusCode(200)
-                .body("find { it._id == 'seed-and-backfill-tenants' }.documentsChanged", is(10))
+                .body("find { it._id == 'seed-and-backfill-employees' }.documentsChanged", is(10))
                 .body("find { it._id == 'transactional-orders' }.documentsChanged", is(8))
                 .body("find { it._id == 'transactional-orders' }.transactional", is(true))
                 .body("find { it._id == 'reactive-transactional-backfill' }.documentsChanged", is(4))
                 .body("find { it._id == 'reactive-transactional-backfill' }.transactional", is(true))
-                .body("find { it._id == 'index-tenant-event-collections' }.documentsChanged", is(2))
+                .body("find { it._id == 'index-customer-event-collections' }.documentsChanged", is(2))
                 .body("find { it._id == 'create-users-email-index' }.documentsChanged", nullValue());
     }
 
     @Test
-    public void perTenantDatabasesWereMigrated() {
-        for (String tenant : IndexTenantEventCollections.TENANT_DATABASES) {
-            given().when().get("/mongodb-migrations/indexes/" + tenant + "/run-events")
+    public void perCustomerDatabasesWereMigrated() {
+        for (String customer : IndexCustomerEventCollections.CUSTOMER_DATABASES) {
+            given().when().get("/mongodb-migrations/indexes/" + customer + "/order-events")
                     .then().statusCode(200)
-                    .body(containsString("run_idx"));
-            given().when().get("/mongodb-migrations/indexes/" + tenant + "/settings")
+                    .body(containsString("order_idx"));
+            given().when().get("/mongodb-migrations/indexes/" + customer + "/settings")
                     .then().statusCode(200)
-                    .body(not(containsString("run_idx")));
-            given().when().get("/mongodb-migrations/documents/" + tenant + "/settings")
+                    .body(not(containsString("order_idx")));
+            given().when().get("/mongodb-migrations/documents/" + customer + "/settings")
                     .then().statusCode(200)
                     .body("version", contains(1));
         }

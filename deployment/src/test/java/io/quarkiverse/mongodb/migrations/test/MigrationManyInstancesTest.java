@@ -41,7 +41,7 @@ public class MigrationManyInstancesTest {
 
     @RegisterExtension
     static final QuarkusExtensionTest test = new QuarkusExtensionTest()
-            .withApplicationRoot(jar -> jar.addClasses(CreateTenants.class, BackfillTenants.class, Always.class))
+            .withApplicationRoot(jar -> jar.addClasses(CreateCustomers.class, BackfillCustomers.class, Always.class))
             .overrideConfigKey("quarkus.mongodb.database", DATABASE);
 
     @Inject
@@ -73,8 +73,8 @@ public class MigrationManyInstancesTest {
         }
 
         assertEquals(1, MAX_ACTIVE.get(), "no two migrations ran at the same time");
-        assertEquals(1, Collections.frequency(ran, "create-tenants"));
-        assertEquals(1, Collections.frequency(ran, "backfill-tenants"));
+        assertEquals(1, Collections.frequency(ran, "create-customers"));
+        assertEquals(1, Collections.frequency(ran, "backfill-customers"));
         assertEquals(INSTANCES, Collections.frequency(ran, "always"), "a runAlways migration runs in every instance");
         assertEquals(ran.size(), RUNS.size(), "each run reported by migrate() actually ran, and nothing else did");
 
@@ -82,7 +82,7 @@ public class MigrationManyInstancesTest {
         assertEquals(3, database.getCollection("migrationHistory").countDocuments());
         assertEquals(INSTANCES, database.getCollection("migrationHistory").find(eq("_id", "always")).first()
                 .getInteger("runCount"));
-        assertEquals(1, database.getCollection("tenants").countDocuments(), "the seed ran once");
+        assertEquals(1, database.getCollection("customers").countDocuments(), "the seed ran once");
         assertEquals(0, database.getCollection("migrationLock").countDocuments(), "the lock is released");
         assertEquals(0, database.getCollection("migrationFailures").countDocuments());
     }
@@ -105,23 +105,23 @@ public class MigrationManyInstancesTest {
         }
     }
 
-    @Migration(id = "create-tenants", order = 1)
-    public static class CreateTenants implements MongoMigration {
+    @Migration(id = "create-customers", order = 1)
+    public static class CreateCustomers implements MongoMigration {
 
         @Override
         public void apply(MigrationContext context) {
-            run("create-tenants");
-            context.collection("tenants").insertOne(new Document("_id", "acme"));
+            run("create-customers");
+            context.collection("customers").insertOne(new Document("_id", 1));
         }
     }
 
-    @Migration(id = "backfill-tenants", order = 2)
-    public static class BackfillTenants implements MongoMigration {
+    @Migration(id = "backfill-customers", order = 2)
+    public static class BackfillCustomers implements MongoMigration {
 
         @Override
         public void apply(MigrationContext context) {
-            run("backfill-tenants");
-            context.setFieldIfMissing("tenants", "plan", "basic");
+            run("backfill-customers");
+            context.setFieldIfMissing("customers", "plan", "basic");
         }
     }
 
