@@ -11,11 +11,15 @@ import io.quarkus.test.junit.QuarkusTest;
 public class MongodbMigrationsResourceTest {
 
     @Test
-    public void testHelloEndpoint() {
-        given()
-                .when().get("/mongodb-migrations")
-                .then()
-                .statusCode(200)
-                .body(is("Hello mongodb-migrations"));
+    public void runsMigrationsAtStartup() {
+        given().when().get("/mongodb-migrations/applied")
+                .then().statusCode(200)
+                .body(is("create-users-email-index,insert-default-user"));
+        given().when().get("/mongodb-migrations/users/count")
+                .then().statusCode(200)
+                .body(is("1"));
+        given().when().get("/mongodb-migrations/users/email-index")
+                .then().statusCode(200)
+                .body(is("true"));
     }
 }

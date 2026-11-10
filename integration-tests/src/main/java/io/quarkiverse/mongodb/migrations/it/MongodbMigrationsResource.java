@@ -1,32 +1,51 @@
-/*
-* Licensed to the Apache Software Foundation (ASF) under one or more
-* contributor license agreements.  See the NOTICE file distributed with
-* this work for additional information regarding copyright ownership.
-* The ASF licenses this file to You under the Apache License, Version 2.0
-* (the "License"); you may not use this file except in compliance with
-* the License.  You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*/
 package io.quarkiverse.mongodb.migrations.it;
 
+import static com.mongodb.client.model.Sorts.ascending;
+import static io.quarkiverse.mongodb.migrations.MigrationHelpers.indexExists;
+
+import java.util.ArrayList;
+import java.util.List;
+
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
+
+import org.bson.Document;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+import com.mongodb.client.MongoClient;
 
 @Path("/mongodb-migrations")
 @ApplicationScoped
 public class MongodbMigrationsResource {
-    // add some rest methods here
+
+    @Inject
+    MongoClient client;
+
+    @ConfigProperty(name = "quarkus.mongodb.database")
+    String database;
 
     @GET
-    public String hello() {
-        return "Hello mongodb-migrations";
+    @Path("/applied")
+    public String applied() {
+        List<String> ids = new ArrayList<>();
+        for (Document entry : client.getDatabase(database).getCollection("migrationHistory").find()
+                .sort(ascending("order"))) {
+            ids.add(entry.getString("_id"));
+        }
+        return String.join(",", ids);
+    }
+
+    @GET
+    @Path("/users/count")
+    public long userCount() {
+        return client.getDatabase(database).getCollection("users").countDocuments();
+    }
+
+    @GET
+    @Path("/users/email-index")
+    public boolean emailIndexExists() {
+        return indexExists(client.getDatabase(database), "users", "email_idx");
     }
 }

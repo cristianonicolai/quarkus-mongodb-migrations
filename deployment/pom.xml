@@ -16,6 +16,10 @@
             <artifactId>quarkus-arc-deployment</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-mongodb-client-deployment</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.quarkiverse.mongodb-migrations</groupId>
             <artifactId>quarkus-mongodb-migrations</artifactId>
             <version>${project.version}</version>
@@ -45,6 +49,15 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <!-- Lets QuarkusProdModeTest build inside target/, where the Kubernetes extension finds the project -->
+                        <project.build.directory>${project.build.directory}</project.build.directory>
+                    </systemPropertyVariables>
+                </configuration>
             </plugin>
         </plugins>
     </build>

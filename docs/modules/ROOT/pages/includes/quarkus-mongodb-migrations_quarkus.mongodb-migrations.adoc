@@ -1,0 +1,290 @@
+[.configuration-legend]
+icon:lock[title=Fixed at build time] Configuration property fixed at build time - All other configuration properties are overridable at runtime
+[.configuration-reference.searchable, cols="80,.^10,.^10"]
+|===
+
+h|[.header-title]##Configuration property##
+h|Type
+h|Default
+
+a|icon:lock[title=Fixed at build time] [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-mongo-client-name]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-mongo-client-name[`+++quarkus.mongodb-migrations.mongo-client-name+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.mongo-client-name+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Name of the MongoDB client that stores the migration history and lock, as configured under `quarkus.mongodb.<name>`. Uses the default client when not set.
+
+Migrations themselves can inject any client.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_MONGO_CLIENT_NAME+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_MONGO_CLIENT_NAME+++`
+endif::add-copy-button-to-env-var[]
+--
+|string
+|
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-enabled]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-enabled[`+++quarkus.mongodb-migrations.enabled+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.enabled+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Whether migrations run at startup when `migrate-at-start` is enabled.
+
+When a Kubernetes init job is generated, it is set to `false` for the application and `true` for the job, so only the job runs migrations.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_ENABLED+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_ENABLED+++`
+endif::add-copy-button-to-env-var[]
+--
+|boolean
+|`+++true+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-migrate-at-start]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-migrate-at-start[`+++quarkus.mongodb-migrations.migrate-at-start+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.migrate-at-start+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Whether to run pending migrations when the application starts.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_MIGRATE_AT_START+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_MIGRATE_AT_START+++`
+endif::add-copy-button-to-env-var[]
+--
+|boolean
+|`+++false+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-database]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-database[`+++quarkus.mongodb-migrations.database+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.database+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Database that stores the migration history and lock. Defaults to the database configured for the MongoDB client (`quarkus.mongodb.database`).
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_DATABASE+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_DATABASE+++`
+endif::add-copy-button-to-env-var[]
+--
+|string
+|
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-history-collection]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-history-collection[`+++quarkus.mongodb-migrations.history-collection+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.history-collection+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Collection that records applied migrations.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_HISTORY_COLLECTION+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_HISTORY_COLLECTION+++`
+endif::add-copy-button-to-env-var[]
+--
+|string
+|`+++migrationHistory+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-lock-collection]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-lock-collection[`+++quarkus.mongodb-migrations.lock-collection+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.lock-collection+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Collection that holds the migration lock.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_LOCK_COLLECTION+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_LOCK_COLLECTION+++`
+endif::add-copy-button-to-env-var[]
+--
+|string
+|`+++migrationLock+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-record-failures]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-record-failures[`+++quarkus.mongodb-migrations.record-failures+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.record-failures+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Whether to record each failed migration attempt, with its error and rollback outcome, in `failure-collection`. Useful when logs are short-lived, such as those of a Kubernetes init job.
+
+Error messages and the first stack frames are stored, so they are visible to anyone who can read that collection.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_RECORD_FAILURES+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_RECORD_FAILURES+++`
+endif::add-copy-button-to-env-var[]
+--
+|boolean
+|`+++true+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-failure-collection]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-failure-collection[`+++quarkus.mongodb-migrations.failure-collection+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.failure-collection+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Collection that records failed migration attempts, when `record-failures` is enabled.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_FAILURE_COLLECTION+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_FAILURE_COLLECTION+++`
+endif::add-copy-button-to-env-var[]
+--
+|string
+|`+++migrationFailures+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-failure-retention]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-failure-retention[`+++quarkus.mongodb-migrations.failure-retention+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.failure-retention+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+How long failed attempts are kept before MongoDB removes them, using a TTL index.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_FAILURE_RETENTION+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_FAILURE_RETENTION+++`
+endif::add-copy-button-to-env-var[]
+--
+|link:https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/Duration.html[Duration] link:#duration-note-anchor-quarkus-mongodb-migrations_quarkus-mongodb-migrations[icon:question-circle[title=More information about the Duration format]]
+|`+++30D+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-lock-lease-duration]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-lock-lease-duration[`+++quarkus.mongodb-migrations.lock-lease-duration+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.lock-lease-duration+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+How long the migration lock is held before it expires. The lock is renewed while migrations run, so this only matters when an instance dies while holding it: other instances can take over once it expires.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_LOCK_LEASE_DURATION+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_LOCK_LEASE_DURATION+++`
+endif::add-copy-button-to-env-var[]
+--
+|link:https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/Duration.html[Duration] link:#duration-note-anchor-quarkus-mongodb-migrations_quarkus-mongodb-migrations[icon:question-circle[title=More information about the Duration format]]
+|`+++60S+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-lock-acquire-timeout]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-lock-acquire-timeout[`+++quarkus.mongodb-migrations.lock-acquire-timeout+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.lock-acquire-timeout+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+How long to wait for the migration lock when another instance holds it, before failing.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_LOCK_ACQUIRE_TIMEOUT+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_LOCK_ACQUIRE_TIMEOUT+++`
+endif::add-copy-button-to-env-var[]
+--
+|link:https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/Duration.html[Duration] link:#duration-note-anchor-quarkus-mongodb-migrations_quarkus-mongodb-migrations[icon:question-circle[title=More information about the Duration format]]
+|`+++5M+++`
+
+a| [[quarkus-mongodb-migrations_quarkus-mongodb-migrations-instance-id]] [.property-path]##link:#quarkus-mongodb-migrations_quarkus-mongodb-migrations-instance-id[`+++quarkus.mongodb-migrations.instance-id+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++quarkus.mongodb-migrations.instance-id+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Name of this application instance, stored with the migration lock and shown in logs so you can tell which instance holds it. Defaults to the `HOSTNAME` environment variable (the pod name in Kubernetes), or a random id generated at startup when it is not set.
+
+It is for diagnostics only: the lock stays correct even if several instances use the same name.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QUARKUS_MONGODB_MIGRATIONS_INSTANCE_ID+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QUARKUS_MONGODB_MIGRATIONS_INSTANCE_ID+++`
+endif::add-copy-button-to-env-var[]
+--
+|string
+|`+++${HOSTNAME:${quarkus.uuid}}+++`
+
+|===
+
+ifndef::no-duration-note[]
+[NOTE]
+[id=duration-note-anchor-quarkus-mongodb-migrations_quarkus-mongodb-migrations]
+.About the Duration format
+====
+To write duration values, use the standard `java.time.Duration` format.
+See the link:https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/Duration.html#parse(java.lang.CharSequence)[Duration#parse() Java API documentation] for more information.
+
+You can also use a simplified format, starting with a number:
+
+* If the value is only a number, it represents time in seconds.
+* If the value is a number followed by `ms`, it represents time in milliseconds.
+
+In other cases, the simplified format is translated to the `java.time.Duration` format for parsing:
+
+* If the value is a number followed by `h`, `m`, or `s`, it is prefixed with `PT`.
+* If the value is a number followed by `d`, it is prefixed with `P`.
+====
+endif::no-duration-note[]
