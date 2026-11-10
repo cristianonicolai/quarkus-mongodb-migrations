@@ -40,7 +40,7 @@ import io.quarkiverse.mongodb.migrations.MigrationException;
 public final class MigrationLock implements AutoCloseable {
 
     private static final Logger LOG = Logger.getLogger(MigrationLock.class);
-    private static final String LOCK_ID = "migrations";
+    static final String LOCK_ID = "migrations";
     private static final Duration MAX_RETRY_INTERVAL = Duration.ofSeconds(1);
 
     private final MongoCollection<Document> collection;

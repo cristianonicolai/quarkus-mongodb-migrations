@@ -48,6 +48,10 @@ final class Expressions {
         return new Document("$gt", List.of(left, right));
     }
 
+    static Document lt(Object left, Object right) {
+        return new Document("$lt", List.of(left, right));
+    }
+
     /** Sum of numbers, or a date plus milliseconds. */
     static Document add(Object left, Object right) {
         return new Document("$add", List.of(left, right));

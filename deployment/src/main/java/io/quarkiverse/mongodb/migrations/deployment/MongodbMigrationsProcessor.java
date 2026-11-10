@@ -22,6 +22,7 @@ import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkiverse.mongodb.migrations.ReactiveMongoMigration;
 import io.quarkiverse.mongodb.migrations.runtime.MigrationDescriptor;
+import io.quarkiverse.mongodb.migrations.runtime.MongoMigratorImpl;
 import io.quarkiverse.mongodb.migrations.runtime.MongodbMigrationsBuildTimeConfig;
 import io.quarkiverse.mongodb.migrations.runtime.MongodbMigrationsRecorder;
 import io.quarkus.arc.deployment.BeanDefiningAnnotationBuildItem;
@@ -137,7 +138,9 @@ class MongodbMigrationsProcessor {
     @BuildStep
     @Record(ExecutionTime.RUNTIME_INIT)
     SyntheticBeanBuildItem migrator(MongodbMigrationsRecorder recorder, MigrationsBuildItem migrations) {
-        return SyntheticBeanBuildItem.configure(MongoMigrator.class)
+        // Also exposed as MongoMigratorImpl for the Dev UI, which reads the status through it.
+        return SyntheticBeanBuildItem.configure(MongoMigratorImpl.class)
+                .types(MongoMigrator.class, MongoMigratorImpl.class)
                 .scope(Singleton.class)
                 .setRuntimeInit()
                 .unremovable()
