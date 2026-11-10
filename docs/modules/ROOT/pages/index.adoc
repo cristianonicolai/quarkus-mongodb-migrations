@@ -25,9 +25,12 @@ what a Quarkus extension does well instead of working around it.
 * *Checked at build time.* Migrations are discovered from the Jandex index. Duplicate ids, duplicate order numbers,
   and classes that don't implement a migration interface fail the build.
 * *Run once, in order.* Applied migrations are recorded in a MongoDB collection. Pending ones run in order, and
-  applied ones are skipped, unless a migration is marked to always run.
-* *Safe with many replicas.* A lock stored in MongoDB ensures only one instance runs migrations. Its lease expires
-  on the server clock, so if an instance dies mid-run, another one takes over once the lease runs out.
+  applied ones are skipped, unless a migration is marked to always run. A migration that isn't transactional and
+  stops after making its changes but before its history entry is written runs again, so write such migrations to be
+  safe to re-run.
+* *Safe with many replicas.* A lock stored in MongoDB lets one instance run migrations at a time. Its lease expires
+  on the server clock, so if an instance dies mid-run, another one takes over once the lease runs out. See
+  <<the-lock>> for its limits.
 * *Kubernetes init job.* With the Quarkus Kubernetes or OpenShift extension, a Job that runs the migrations is
   generated, and the application waits for it.
 * *Idempotent helpers* for creating and dropping indexes and collections, TTL indexes, and renaming or removing
@@ -40,7 +43,6 @@ what a Quarkus extension does well instead of working around it.
 
 Planned:
 
-* Importing migration history from a previous tool, so already applied changes are not run again.
 * A health check.
 
 [[installation]]
@@ -66,6 +68,19 @@ With Gradle, add the following to your `build.gradle`:
 ----
 implementation("io.quarkiverse.mongodb-migrations:quarkus-mongodb-migrations:{project-version}")
 ----
+
+[[requirements]]
+=== Requirements
+
+The extension supports the MongoDB versions that MongoDB itself still supports, and is tested on 7.0 and 8.0.
+Transactional migrations need a replica set or sharded cluster, as MongoDB transactions do; everything else also
+works on a standalone server. Quarkus Dev Services starts a single-node replica set, so transactions work in dev mode
+and tests too.
+
+NOTE: MongoDB 8 refuses to start on Linux kernels 6.19 through 7.0.13, which are incompatible with the memory allocator
+it bundles (https://jira.mongodb.org/browse/SERVER-121912[SERVER-121912]). This applies wherever `mongod` runs: on
+your servers, in containers, and under Dev Services, where the container shares the host's kernel. Use kernel 7.0.14
+or later, or one older than 6.19. MongoDB 7.0 isn't affected.
 
 [[api-at-a-glance]]
 == API at a glance
@@ -116,8 +131,9 @@ public class CreateUsersEmailIndex implements MongoMigration {
 
     @Override
     public void apply(MigrationContext context) {
-        context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));
+        // Rename first: a unique index treats a missing field as null, so it can't be built while users lack email.
         context.renameField("users", "mail", "email");
+        context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));
     }
 }
 ----
@@ -216,6 +232,9 @@ public class BackfillOrderStatus implements MongoMigration {
   (60 seconds by default) and size, and schema changes are not allowed. The schema helpers (`createIndex`,
   `dropIndex`, `createCollection`, `dropCollection`, `renameCollection`, `createTtlIndex`) refuse to run in a
   transactional migration. Put schema changes in a separate migration.
+* The transaction commits only while its run holds the <<the-lock,lock>>, which isn't renewed while it runs. Keep it
+  shorter than `lock-lease-duration` (60 seconds by default): once it runs longer, another instance can take the lock,
+  and the transaction is then aborted.
 * Reactive migrations work the same way, with `ReactiveMigrationContext.session()`.
 
 [[failures-and-rollback]]
@@ -230,9 +249,13 @@ both interfaces provide a default that does nothing. `rollback` is not called fo
 ----
 @Override
 public void rollback(MigrationContext context) {
+    // email_idx is introduced by this migration, so dropping it can't remove an index that was there before.
     context.dropIndex("users", "email_idx");
 }
 ----
+
+Undo only what the migration itself changed. The helpers skip work that is already done, so an index or collection
+with the same name may have existed before the migration ran; `rollback` shouldn't drop it then.
 
 Only the failed migration is rolled back. Migrations that succeeded earlier in the same run stay applied. If
 `rollback` itself fails, its error is attached to the migration failure as a suppressed exception.
@@ -268,6 +291,7 @@ Run pending migrations when the application starts:
 
 [source,properties]
 ----
+quarkus.mongodb.database=app
 quarkus.mongodb-migrations.migrate-at-start=true
 ----
 
@@ -295,6 +319,35 @@ in `quarkus.mongodb-migrations.database` if set. Each applied migration has a hi
   documentsChanged: 4210              // latest run, only if the migration reported changes
 }
 ----
+
+[[the-lock]]
+=== The lock
+
+Each run takes a lock, a single document in the lock collection, before running anything, and releases it at the
+end. An instance that finds the lock held waits for it, checking about once a second, for up to `lock-acquire-timeout`
+(5 minutes), and then fails. The lock is a lease of `lock-lease-duration` (60 seconds), renewed in the background
+every third of that while the run lasts. Its expiry is computed with the MongoDB server's clock, so instances with
+skewed clocks agree on it.
+
+The holder checks that it still has the lock before each migration and stops if it doesn't, but not while a migration
+runs. If an instance stalls for longer than the lease while a migration runs, for example in a long garbage collection
+pause or a network partition, another instance can take the lock and start running migrations while the first one's
+current migration is still finishing.
+
+<<transactional-migrations,Transactional migrations>> are protected against this: the lock document is written in
+the migration's transaction just before it commits, so the transaction commits only if its run still holds the lock,
+and another instance can't take the lock between that write and the commit. If the lock was taken over, the
+transaction is aborted and the migration fails like any other. Background renewal pauses while the transaction runs,
+since a renewal would conflict with that write. A transaction that runs longer than the lease still commits if no
+other instance took the lock meanwhile, but it can be aborted. MongoDB limits transactions to 60 seconds by default,
+the same as the default lease.
+
+Migrations that aren't transactional have no such protection. Being safe to re-run doesn't make an overlap harmless:
+two runs of the same migration can interleave. For example, a migration that sets `x` to 1, copies `x` to `y`, then
+sets `x` back to 0 is safe to re-run, but two overlapping runs can leave `y` at 0. Keep `lock-lease-duration` well
+above the longest stall you expect, so an overlap is unlikely. Where an overlap would still corrupt data, make the
+migration transactional, or write it so that it tolerates running concurrently with itself, for example with single
+atomic updates whose result doesn't depend on the other steps.
 
 [[running-as-a-kubernetes-job]]
 === Running as a Kubernetes job

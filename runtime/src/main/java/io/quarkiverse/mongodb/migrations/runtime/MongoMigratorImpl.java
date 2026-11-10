@@ -131,7 +131,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 Attempt attempt = new Attempt();
                 try {
                     if (migration.isTransactional()) {
-                        runInTransaction(migration, history, start, attempt);
+                        runInTransaction(migration, history, start, attempt, lock);
                     } else {
                         run(migration, attempt);
                     }
@@ -293,16 +293,29 @@ public final class MongoMigratorImpl implements MongoMigrator {
     /**
      * Runs a migration and writes its history entry in one transaction, so both commit or neither does. A failure
      * aborts the transaction instead of calling rollback.
+     * <p>
+     * The transaction is fenced with the lock: it commits only if this run still holds the lock. Renewal pauses while
+     * it runs, since a renewal would conflict with the fence, so the transaction must finish within the lease.
      */
     private void runInTransaction(MigrationDescriptor migration, MongoCollection<Document> history, long start,
-            Attempt attempt) {
+            Attempt attempt, MigrationLock lock) {
         String databaseName = migratedDatabaseName(migration);
         // Collections can't always be created inside a transaction, so the history collection must exist first.
         MigrationHelpers.createCollection(database, config.historyCollection());
-        if (migration.isReactive()) {
-            runInReactiveTransaction(migration, databaseName, start, attempt);
-            return;
+        lock.pauseRenewal();
+        try {
+            if (migration.isReactive()) {
+                runInReactiveTransaction(migration, databaseName, start, attempt, lock);
+            } else {
+                runInBlockingTransaction(migration, history, databaseName, start, attempt, lock);
+            }
+        } finally {
+            lock.resumeRenewal();
         }
+    }
+
+    private void runInBlockingTransaction(MigrationDescriptor migration, MongoCollection<Document> history,
+            String databaseName, long start, Attempt attempt, MigrationLock lock) {
         try (ClientSession session = client.startSession()) {
             session.startTransaction();
             try {
@@ -311,6 +324,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
                 invoke(migration, migrationContext, false);
                 record(history, migration, Duration.ofNanos(System.nanoTime() - start), attempt.documentsChanged(),
                         session);
+                lock.fence(session);
                 session.commitTransaction();
             } catch (Throwable failure) {
                 if (session.hasActiveTransaction()) {
@@ -322,7 +336,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
     }
 
     private void runInReactiveTransaction(MigrationDescriptor migration, String databaseName, long start,
-            Attempt attempt) {
+            Attempt attempt, MigrationLock lock) {
         ReactiveMongoClient reactive = reactiveClient(migration);
         com.mongodb.reactivestreams.client.ClientSession session = reactive.startSession().await().indefinitely();
         try {
@@ -337,6 +351,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
                                         attempt.documentsChanged()),
                                 new UpdateOptions().upsert(true))
                         .await().indefinitely();
+                lock.fence(reactive, session).await().indefinitely();
                 await(session.commitTransaction());
             } catch (Throwable failure) {
                 if (session.hasActiveTransaction()) {

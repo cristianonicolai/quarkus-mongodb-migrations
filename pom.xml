@@ -30,6 +30,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <quarkus.version>3.40.1.1</quarkus.version>
+        <!-- MongoDB image that Dev Services starts for the tests. CI also runs them with -Dmongodb.image=mongo:7.0 -->
+        <mongodb.image>mongo:8.0</mongodb.image>
     </properties>
 
     <dependencyManagement>

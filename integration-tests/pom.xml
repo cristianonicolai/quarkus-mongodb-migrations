@@ -51,6 +51,14 @@
                 </executions>
             </plugin>
             <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <quarkus.mongodb.devservices.image-name>${mongodb.image}</quarkus.mongodb.devservices.image-name>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+            <plugin>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <executions>
                     <execution>
@@ -65,6 +73,7 @@
                         <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                         <maven.home>${maven.home}</maven.home>
+                        <quarkus.mongodb.devservices.image-name>${mongodb.image}</quarkus.mongodb.devservices.image-name>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

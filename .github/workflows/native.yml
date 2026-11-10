@@ -18,8 +18,9 @@ defaults:
 jobs:
   native-tests:
     name: Native tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Not ubuntu-latest for now, like the Build workflow: MongoDB 8 refuses to start on its kernel (SERVER-121912).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       # The branch picked when the workflow was run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

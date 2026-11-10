@@ -20,9 +20,12 @@ what a Quarkus extension does well instead of working around it.
 - **Checked at build time.** Migrations are discovered from the Jandex index. Duplicate ids, duplicate order numbers,
   and classes that don't implement a migration interface fail the build.
 - **Run once, in order.** Applied migrations are recorded in a MongoDB collection. Pending ones run in order, and
-  applied ones are skipped, unless a migration is marked to always run.
-- **Safe with many replicas.** A lock stored in MongoDB ensures only one instance runs migrations. Its lease expires
-  on the server clock, so if an instance dies mid-run, another one takes over once the lease runs out.
+  applied ones are skipped, unless a migration is marked to always run. A migration that isn't transactional and
+  stops after making its changes but before its history entry is written runs again, so write such migrations to be
+  safe to re-run.
+- **Safe with many replicas.** A lock stored in MongoDB lets one instance run migrations at a time. Its lease expires
+  on the server clock, so if an instance dies mid-run, another one takes over once the lease runs out. The
+  documentation describes its limits.
 - **Kubernetes init job.** With the Quarkus Kubernetes or OpenShift extension, a Job that runs the migrations is
   generated, and the application waits for it.
 - **Idempotent helpers** for creating and dropping indexes and collections, TTL indexes, and renaming or removing
@@ -35,10 +38,12 @@ what a Quarkus extension does well instead of working around it.
 
 Planned:
 
-- Importing migration history from a previous tool, so already applied changes are not run again.
 - A health check.
 
 ## Getting started
+
+Supports the MongoDB versions that MongoDB itself still supports, and is tested on 7.0 and 8.0. Transactional
+migrations also need a replica set or sharded cluster.
 
 Add the dependency:
 
@@ -68,6 +73,7 @@ public class CreateUsersEmailIndex implements MongoMigration {
 And run pending migrations when the application starts:
 
 ```properties
+quarkus.mongodb.database=app
 quarkus.mongodb-migrations.migrate-at-start=true
 ```
 
