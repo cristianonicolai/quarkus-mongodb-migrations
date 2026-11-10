@@ -33,7 +33,10 @@ public class MongodbMigrationsRecorder {
     }
 
     public Supplier<MongoMigrator> migratorSupplier(List<MigrationDescriptor> migrations) {
-        return () -> new MongoMigratorImpl(migrations, database(), config.getValue());
+        // Runs at startup on a Quarkus thread, whose context class loader can load the application's classes.
+        // migrate() may later be called from any thread, so the loader is captured here.
+        ClassLoader applicationClassLoader = Thread.currentThread().getContextClassLoader();
+        return () -> new MongoMigratorImpl(migrations, applicationClassLoader, database(), config.getValue());
     }
 
     public void migrateAtStart() {

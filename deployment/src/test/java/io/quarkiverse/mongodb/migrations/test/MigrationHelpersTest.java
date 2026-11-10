@@ -122,4 +122,26 @@ public class MigrationHelpersTest {
         ReactiveMigrationHelpers.dropCollection(database, "purchases").await().indefinitely();
         assertFalse(ReactiveMigrationHelpers.collectionExists(database, "purchases").await().indefinitely());
     }
+
+    @Test
+    void reactiveTtlAndFieldHelpers() {
+        ReactiveMongoDatabase database = reactiveClient.getDatabase("reactive-fields");
+        database.getCollection("users").insertMany(List.of(
+                new Document("mail", "a@example.com").append("legacy", true),
+                new Document("email", "b@example.com"))).await().indefinitely();
+
+        ReactiveMigrationHelpers.createTtlIndex(database, "users", "created_ttl", "createdAt", Duration.ofHours(1))
+                .await().indefinitely();
+        ReactiveMigrationHelpers.createTtlIndex(database, "users", "created_ttl", "createdAt", Duration.ofHours(1))
+                .await().indefinitely();
+        Document ttl = database.getCollection("users").listIndexes()
+                .select().where(index -> "created_ttl".equals(index.getString("name")))
+                .collect().first().await().indefinitely();
+        assertEquals(3600L, ttl.get("expireAfterSeconds", Number.class).longValue());
+
+        assertEquals(1L, ReactiveMigrationHelpers.renameField(database, "users", "mail", "email").await().indefinitely());
+        assertEquals(0L, ReactiveMigrationHelpers.renameField(database, "users", "mail", "email").await().indefinitely());
+        assertEquals(1L, ReactiveMigrationHelpers.removeField(database, "users", "legacy").await().indefinitely());
+        assertEquals(0L, ReactiveMigrationHelpers.removeField(database, "users", "legacy").await().indefinitely());
+    }
 }

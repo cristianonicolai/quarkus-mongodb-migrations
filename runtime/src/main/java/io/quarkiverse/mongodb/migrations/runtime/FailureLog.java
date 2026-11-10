@@ -65,7 +65,7 @@ final class FailureLog {
                     new Field<>("error", literal(describe(error, true))),
                     new Field<>("rollbackError", rollbackError == null ? null : literal(describe(rollbackError, false))))),
                     new UpdateOptions().upsert(true));
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
             LOG.warnf(e, "Failed to record the failure of migration %s", migration.getId());
         }
     }

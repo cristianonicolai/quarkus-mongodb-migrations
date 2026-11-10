@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
+import java.util.List;
 
 import jakarta.inject.Inject;
 
@@ -18,6 +19,7 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 
 import io.quarkiverse.mongodb.migrations.MigrationException;
+import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkiverse.mongodb.migrations.runtime.MigrationLock;
 import io.quarkiverse.mongodb.migrations.runtime.MongodbMigrationsConfig;
 import io.quarkus.test.QuarkusExtensionTest;
@@ -35,6 +37,9 @@ public class MigrationLockTest {
 
     @Inject
     MongodbMigrationsConfig config;
+
+    @Inject
+    MongoMigrator migrator;
 
     @Test
     void onlyOneInstanceHoldsTheLock(TestInfo info) {
@@ -89,6 +94,11 @@ public class MigrationLockTest {
                     () -> waiter.acquire(Duration.ofMillis(300)));
             assertTrue(failure.getMessage().contains("held by pod-a"), failure.getMessage());
         }
+    }
+
+    @Test
+    void applicationWithoutMigrationsRunsNothing() {
+        assertEquals(List.of(), migrator.migrate());
     }
 
     @Test
