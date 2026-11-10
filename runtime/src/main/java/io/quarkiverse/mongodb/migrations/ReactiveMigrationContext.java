@@ -1,43 +1,59 @@
 package io.quarkiverse.mongodb.migrations;
 
+import static com.mongodb.client.model.Filters.eq;
 import static com.mongodb.client.model.Filters.exists;
 import static com.mongodb.client.model.Updates.rename;
+import static com.mongodb.client.model.Updates.set;
 import static com.mongodb.client.model.Updates.unset;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.OptionalLong;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import org.bson.Document;
+import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.conversions.Bson;
 
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.model.IndexOptions;
+import com.mongodb.client.model.Sorts;
+import com.mongodb.client.model.UpdateOneModel;
+import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.client.model.WriteModel;
 import com.mongodb.client.result.DeleteResult;
 import com.mongodb.client.result.InsertManyResult;
 import com.mongodb.client.result.InsertOneResult;
 import com.mongodb.client.result.UpdateResult;
 import com.mongodb.reactivestreams.client.ClientSession;
 
+import io.quarkus.mongodb.FindOptions;
 import io.quarkus.mongodb.reactive.ReactiveMongoClient;
 import io.quarkus.mongodb.reactive.ReactiveMongoCollection;
 import io.quarkus.mongodb.reactive.ReactiveMongoDatabase;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 
 /**
- * Passed to a {@link ReactiveMongoMigration}: the database to migrate, and idempotent reactive helpers that work on
- * it. The reactive counterpart of {@link MigrationContext}, targeting the same database.
+ * Passed to a {@link ReactiveMongoMigration}: the database to migrate, and reactive helpers that work on it. The
+ * reactive counterpart of {@link MigrationContext}, targeting the same database.
  * <p>
- * To work on another database, use {@link #client()}, optionally with the static {@link ReactiveMigrationHelpers}.
+ * The collection, index, field and array helpers can run again safely: they skip work that is already done.
+ * {@code updateMany}, {@code deleteMany} and {@code updateEach} run the update they are given, so its author makes it
+ * safe to repeat. To work on other databases, use {@code forEachDatabase} or {@link #client()}.
  * <p>
  * In a {@link Migration#transactional() transactional} migration, {@link #session()} returns the transaction's
- * session, the field helpers run in the transaction, and the schema helpers fail.
+ * session, the data helpers run in the transaction, and the collection and index helpers fail.
  */
 public final class ReactiveMigrationContext {
 
     private final ReactiveMongoClient client;
     private final ReactiveMongoDatabase database;
     private final ClientSession session;
-    private final ChangeCounter changes = new ChangeCounter();
+    private final ChangeCounter changes;
 
     /**
      * Creates a context for a database of the given client, for example to call a migration from a test.
@@ -50,9 +66,18 @@ public final class ReactiveMigrationContext {
      * Creates a context for a transactional migration, whose operations take part in the session's transaction.
      */
     public ReactiveMigrationContext(ReactiveMongoClient client, String databaseName, ClientSession session) {
+        this(client, databaseName, session, new ChangeCounter());
+    }
+
+    /**
+     * A context for another database of the same migration, sharing its session and change count.
+     */
+    private ReactiveMigrationContext(ReactiveMongoClient client, String databaseName, ClientSession session,
+            ChangeCounter changes) {
         this.client = client;
         this.database = client.getDatabase(databaseName);
         this.session = session;
+        this.changes = changes;
     }
 
     /**
@@ -196,6 +221,226 @@ public final class ReactiveMigrationContext {
                 : database.getCollection(collection).updateMany(session, exists(field), unset(field))
                         .map(UpdateResult::getModifiedCount);
         return changed.invoke(changes::add);
+    }
+
+    /**
+     * Sets a field to the same value on every document matching the filter. Counts as changed documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#setField(String, Bson, String, Object)
+     */
+    public Uni<Long> setField(String collection, Bson filter, String field, Object value) {
+        return update(collection, filter, set(field, value), new UpdateOptions());
+    }
+
+    /**
+     * Sets several fields on every document matching the filter. Counts as changed documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#setFields(String, Bson, Map)
+     */
+    public Uni<Long> setFields(String collection, Bson filter, Map<String, ?> values) {
+        return update(collection, filter, DataOperations.setFields(values), new UpdateOptions());
+    }
+
+    /**
+     * Sets a field on every document where it is missing or null. Safe to run again. Counts as changed documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#setFieldIfMissing(String, String, Object)
+     */
+    public Uni<Long> setFieldIfMissing(String collection, String field, Object value) {
+        return setFieldIfMissing(collection, null, field, value);
+    }
+
+    /**
+     * Like {@link #setFieldIfMissing(String, String, Object)}, limited to documents matching the filter.
+     *
+     * @return the number of documents changed
+     */
+    public Uni<Long> setFieldIfMissing(String collection, Bson filter, String field, Object value) {
+        return update(collection, DataOperations.missing(filter, field), set(field, value), new UpdateOptions());
+    }
+
+    /**
+     * Sets a field on every element of an array of documents. Counts as changed documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#setFieldInArray(String, String, String, Object)
+     */
+    public Uni<Long> setFieldInArray(String collection, String arrayField, String field, Object value) {
+        return arrayUpdate(collection, DataOperations.setInArray(arrayField, null, field, value, registry(collection)));
+    }
+
+    /**
+     * Sets a field on the elements of an array of documents that match the element filter. Counts as changed
+     * documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#setFieldInArray(String, String, Bson, String, Object)
+     */
+    public Uni<Long> setFieldInArray(String collection, String arrayField, Bson elementFilter, String field,
+            Object value) {
+        return arrayUpdate(collection,
+                DataOperations.setInArray(arrayField, elementFilter, field, value, registry(collection)));
+    }
+
+    /**
+     * Sets a field on the elements of an array of documents where it is missing or null. Counts as changed documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#setFieldInArrayIfMissing(String, String, String, Object)
+     */
+    public Uni<Long> setFieldInArrayIfMissing(String collection, String arrayField, String field, Object value) {
+        return arrayUpdate(collection, DataOperations.setInArrayIfMissing(arrayField, field, value, registry(collection)));
+    }
+
+    /**
+     * Removes a field from every element of an array of documents that has it. Counts as changed documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#removeFieldInArray(String, String, String)
+     */
+    public Uni<Long> removeFieldInArray(String collection, String arrayField, String field) {
+        return arrayUpdate(collection, DataOperations.removeInArray(arrayField, field, registry(collection)));
+    }
+
+    /**
+     * Updates each document matching the filter with an update computed from the document itself. Return
+     * {@code null} to leave a document unchanged. Documents are streamed and written in batches. Counts as changed
+     * documents.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#updateEach(String, Bson, Function)
+     */
+    public Uni<Long> updateEach(String collection, Bson filter, Function<Document, Bson> update) {
+        return updateEach(collection, filter, null, update);
+    }
+
+    /**
+     * Like {@link #updateEach(String, Bson, Function)}, reading only the fields in the projection. It must keep {@code _id}
+     * as it is: leave it out or include it, but don't exclude or compute it.
+     *
+     * @return the number of documents changed
+     */
+    public Uni<Long> updateEach(String collection, Bson filter, Bson projection, Function<Document, Bson> update) {
+        ReactiveMongoCollection<Document> target = database.getCollection(collection);
+        try {
+            DataOperations.requireIdKept(projection, target.getCodecRegistry());
+        } catch (IllegalArgumentException e) {
+            return Uni.createFrom().failure(e);
+        }
+        // Sorted by _id, which updates can't change, so no document is visited twice while the collection changes.
+        FindOptions options = new FindOptions().sort(Sorts.ascending("_id")).batchSize(DataOperations.BATCH_SIZE);
+        if (projection != null) {
+            options.projection(projection);
+        }
+        Multi<Document> documents = session == null ? target.find(filter, options) : target.find(session, filter, options);
+        // Memory stays bounded by backpressure: the concatenation requests one batch at a time, so at most one batch of
+        // documents is read ahead of the writes.
+        return documents
+                .onItem().transformToIterable(document -> {
+                    // Read before the callback, so changing the document can't redirect the write to another one.
+                    Object id = DataOperations.id(document);
+                    Bson documentUpdate = update.apply(document);
+                    return documentUpdate == null
+                            ? List.<WriteModel<Document>> of()
+                            : List.<WriteModel<Document>> of(new UpdateOneModel<>(eq("_id", id), documentUpdate));
+                })
+                .group().intoLists().of(DataOperations.BATCH_SIZE)
+                .onItem().transformToUniAndConcatenate(batch -> bulkWrite(target, batch))
+                .collect().with(Collectors.summingLong(Long::longValue));
+    }
+
+    /**
+     * Runs an action for each database whose name matches, one at a time, with a context for that database. MongoDB's
+     * own databases ({@code admin}, {@code local} and {@code config}) are never included. Changes made through the
+     * database contexts count towards this migration, and in a transactional migration they take part in its
+     * transaction.
+     *
+     * @see MigrationContext#forEachDatabase(Predicate, java.util.function.Consumer)
+     */
+    public Uni<Void> forEachDatabase(Predicate<String> name, Function<ReactiveMigrationContext, Uni<Void>> action) {
+        return client.listDatabaseNames().collect().asList()
+                .onItem().transformToMulti(names -> Multi.createFrom().iterable(DataOperations.databaseNames(names, name)))
+                .onItem().transformToUniAndConcatenate(
+                        databaseName -> action.apply(new ReactiveMigrationContext(client, databaseName, session, changes)))
+                .collect().last()
+                .replaceWithVoid();
+    }
+
+    /**
+     * Runs an action for each existing collection of the database whose name matches, one at a time. MongoDB's own
+     * {@code system.*} collections are never included.
+     *
+     * @see MigrationContext#forEachCollection(Predicate, java.util.function.Consumer)
+     */
+    public Uni<Void> forEachCollection(Predicate<String> name, Function<String, Uni<Void>> action) {
+        return database.listCollectionNames().collect().asList()
+                .onItem().transformToMulti(names -> Multi.createFrom().iterable(DataOperations.collectionNames(names, name)))
+                .onItem().transformToUniAndConcatenate(collection -> action.apply(collection))
+                .collect().last()
+                .replaceWithVoid();
+    }
+
+    /**
+     * Updates every document matching the filter, running in the transaction of a transactional migration and counting
+     * the changed documents automatically.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#updateMany(String, Bson, Bson)
+     */
+    public Uni<Long> updateMany(String collection, Bson filter, Bson update) {
+        return update(collection, filter, update, new UpdateOptions());
+    }
+
+    /**
+     * Updates every document matching the filter with an aggregation pipeline, running in the transaction of a
+     * transactional migration and counting the changed documents automatically.
+     *
+     * @return the number of documents changed
+     * @see MigrationContext#updateMany(String, Bson, List)
+     */
+    public Uni<Long> updateMany(String collection, Bson filter, List<? extends Bson> pipeline) {
+        ReactiveMongoCollection<Document> target = database.getCollection(collection);
+        Uni<UpdateResult> result = session == null
+                ? target.updateMany(filter, pipeline)
+                : target.updateMany(session, filter, pipeline);
+        return result.invoke(changes::add).map(r -> r.wasAcknowledged() ? r.getModifiedCount() : 0L);
+    }
+
+    /**
+     * Deletes every document matching the filter, running in the transaction of a transactional migration and counting
+     * the deleted documents automatically.
+     *
+     * @return the number of documents deleted
+     * @see MigrationContext#deleteMany(String, Bson)
+     */
+    public Uni<Long> deleteMany(String collection, Bson filter) {
+        ReactiveMongoCollection<Document> target = database.getCollection(collection);
+        Uni<DeleteResult> result = session == null ? target.deleteMany(filter) : target.deleteMany(session, filter);
+        return result.invoke(changes::add).map(r -> r.wasAcknowledged() ? r.getDeletedCount() : 0L);
+    }
+
+    private Uni<Long> arrayUpdate(String collection, DataOperations.ArrayUpdate arrayUpdate) {
+        return update(collection, arrayUpdate.documentFilter(), arrayUpdate.update(), arrayUpdate.options());
+    }
+
+    private Uni<Long> update(String collection, Bson filter, Bson update, UpdateOptions options) {
+        ReactiveMongoCollection<Document> target = database.getCollection(collection);
+        Uni<UpdateResult> result = session == null
+                ? target.updateMany(filter, update, options)
+                : target.updateMany(session, filter, update, options);
+        return result.invoke(changes::add).map(r -> r.wasAcknowledged() ? r.getModifiedCount() : 0L);
+    }
+
+    private Uni<Long> bulkWrite(ReactiveMongoCollection<Document> target, List<WriteModel<Document>> batch) {
+        Uni<BulkWriteResult> result = session == null ? target.bulkWrite(batch) : target.bulkWrite(session, batch);
+        return result.invoke(changes::add).map(r -> r.wasAcknowledged() ? (long) r.getModifiedCount() : 0L);
+    }
+
+    private CodecRegistry registry(String collection) {
+        return database.getCollection(collection).getCodecRegistry();
     }
 
     /**
