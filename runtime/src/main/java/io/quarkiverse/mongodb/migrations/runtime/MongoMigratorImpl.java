@@ -11,6 +11,7 @@ import static io.quarkiverse.mongodb.migrations.runtime.Expressions.literal;
 import static io.quarkiverse.mongodb.migrations.runtime.Expressions.lt;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -38,6 +39,8 @@ import com.mongodb.client.model.Updates;
 import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
 import io.quarkiverse.mongodb.migrations.MigrationHelpers;
+import io.quarkiverse.mongodb.migrations.MigrationStatus;
+import io.quarkiverse.mongodb.migrations.MigrationsStatus;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
 import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkiverse.mongodb.migrations.ReactiveMigrationContext;
@@ -81,6 +84,30 @@ public final class MongoMigratorImpl implements MongoMigrator {
 
     @Override
     public List<String> migrate() {
+        return migrateUpTo(Integer.MAX_VALUE);
+    }
+
+    @Override
+    public List<String> migrateTo(String id) {
+        MigrationDescriptor target = migrations.stream().filter(migration -> migration.getId().equals(id)).findFirst()
+                .orElseThrow(() -> new MigrationException("No migration with id " + id));
+        return migrateUpTo(target.getOrder());
+    }
+
+    @Override
+    public MigrationContext context() {
+        return new MigrationContext(client, migratedDatabaseName.get());
+    }
+
+    @Override
+    public ReactiveMigrationContext reactiveContext() {
+        return new ReactiveMigrationContext(reactiveClient.get(), migratedDatabaseName.get());
+    }
+
+    /**
+     * Runs the pending migrations whose order is at most {@code lastOrder}.
+     */
+    private List<String> migrateUpTo(int lastOrder) {
         MongoCollection<Document> history = database.getCollection(config.historyCollection());
         try (MigrationLock lock = new MigrationLock(database.getCollection(config.lockCollection()),
                 config.lockLeaseDuration(), config.instanceId())) {
@@ -92,6 +119,9 @@ public final class MongoMigratorImpl implements MongoMigrator {
                     : null;
             List<String> ran = new ArrayList<>();
             for (MigrationDescriptor migration : migrations) {
+                if (migration.getOrder() > lastOrder) {
+                    break;
+                }
                 if (applied.containsKey(migration.getId()) && !migration.isRunAlways()) {
                     continue;
                 }
@@ -144,30 +174,23 @@ public final class MongoMigratorImpl implements MongoMigrator {
         }
     }
 
-    /**
-     * Reads which migrations are applied or pending, their latest failures, and the current lock holder, without
-     * taking the lock. Used by the Dev UI.
-     */
+    @Override
     public MigrationsStatus status() {
         Map<String, Document> applied = appliedEntries(database.getCollection(config.historyCollection()));
         Map<String, Document> latestFailures = latestFailures();
-        List<MigrationsStatus.Migration> statuses = new ArrayList<>();
-        int pending = 0;
+        List<MigrationStatus> statuses = new ArrayList<>();
         for (MigrationDescriptor migration : migrations) {
             Document entry = applied.get(migration.getId());
-            if (entry == null || migration.isRunAlways()) {
-                pending++;
-            }
-            statuses.add(new MigrationsStatus.Migration(migration.getId(), migration.getOrder(), migration.getClassName(),
-                    migration.isReactive(), migration.isRunAlways(), entry != null,
-                    entry == null ? null : iso(entry.getDate("appliedAt")),
+            statuses.add(new MigrationStatus(migration.getId(), migration.getOrder(), migration.getClassName(),
+                    migration.isReactive(), migration.isRunAlways(), migration.isTransactional(), entry != null,
+                    entry == null ? null : instant(entry.getDate("appliedAt")),
                     entry == null ? null : entry.getString("appliedBy"),
-                    entry == null ? null : iso(entry.getDate("lastAppliedAt")),
+                    entry == null ? null : instant(entry.getDate("lastAppliedAt")),
                     entry == null ? null : entry.getInteger("runCount"),
                     entry == null ? null : asLong(entry.get("documentsChanged")),
                     failureSince(latestFailures.get(migration.getId()), entry)));
         }
-        return new MigrationsStatus(statuses, pending, lock());
+        return new MigrationsStatus(statuses, lock());
     }
 
     private Map<String, Document> latestFailures() {
@@ -187,7 +210,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
     /**
      * The failure, unless the migration has succeeded since.
      */
-    private static MigrationsStatus.Failure failureSince(Document failure, Document entry) {
+    private static MigrationStatus.Failure failureSince(Document failure, Document entry) {
         if (failure == null) {
             return null;
         }
@@ -198,7 +221,7 @@ public final class MongoMigratorImpl implements MongoMigrator {
         }
         Document error = failure.get("error", Document.class);
         Document rollbackError = failure.get("rollbackError", Document.class);
-        return new MigrationsStatus.Failure(iso(failedAt), failure.getString("instanceId"),
+        return new MigrationStatus.Failure(instant(failedAt), failure.getString("instanceId"),
                 error == null ? null : error.getString("type"),
                 error == null ? null : error.getString("message"),
                 rollbackError == null ? null : rollbackError.getString("message"),
@@ -215,16 +238,16 @@ public final class MongoMigratorImpl implements MongoMigrator {
         if (lock == null) {
             return null;
         }
-        return new MigrationsStatus.Lock(lock.getString("instanceId"), iso(lock.getDate("acquiredAt")),
-                iso(lock.getDate("expiresAt")), lock.getBoolean("expired", false));
+        return new MigrationsStatus.Lock(lock.getString("instanceId"), instant(lock.getDate("acquiredAt")),
+                instant(lock.getDate("expiresAt")), lock.getBoolean("expired", false));
     }
 
     private static Long asLong(Object value) {
         return value instanceof Number number ? number.longValue() : null;
     }
 
-    private static String iso(Date date) {
-        return date == null ? null : date.toInstant().toString();
+    private static Instant instant(Date date) {
+        return date == null ? null : date.toInstant();
     }
 
     private static Map<String, Document> appliedEntries(MongoCollection<Document> history) {

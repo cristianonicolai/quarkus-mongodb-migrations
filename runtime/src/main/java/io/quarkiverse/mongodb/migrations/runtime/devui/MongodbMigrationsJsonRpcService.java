@@ -6,8 +6,7 @@ import jakarta.inject.Inject;
 
 import org.jboss.logging.Logger;
 
-import io.quarkiverse.mongodb.migrations.runtime.MigrationsStatus;
-import io.quarkiverse.mongodb.migrations.runtime.MongoMigratorImpl;
+import io.quarkiverse.mongodb.migrations.MongoMigrator;
 
 /**
  * Backs the Dev UI pages. Registered only in dev mode. Methods block, so Dev UI runs them on a worker thread.
@@ -17,17 +16,17 @@ public class MongodbMigrationsJsonRpcService {
     private static final Logger LOG = Logger.getLogger(MongodbMigrationsJsonRpcService.class);
 
     @Inject
-    MongoMigratorImpl migrator;
+    MongoMigrator migrator;
 
-    public MigrationsStatus getStatus() {
-        return migrator.status();
+    public StatusView getStatus() {
+        return StatusView.of(migrator.status());
     }
 
     /**
      * The label shown on the Status page link of the card.
      */
     public String getPendingLabel() {
-        int pending = migrator.status().pending();
+        int pending = migrator.pending().size();
         return pending == 0 ? "up to date" : pending + " pending";
     }
 

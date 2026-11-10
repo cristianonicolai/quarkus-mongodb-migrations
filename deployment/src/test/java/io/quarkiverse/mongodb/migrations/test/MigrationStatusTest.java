@@ -23,10 +23,11 @@ import com.mongodb.client.MongoClient;
 import io.quarkiverse.mongodb.migrations.Migration;
 import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.MigrationException;
+import io.quarkiverse.mongodb.migrations.MigrationStatus;
+import io.quarkiverse.mongodb.migrations.MigrationsStatus;
 import io.quarkiverse.mongodb.migrations.MongoMigration;
+import io.quarkiverse.mongodb.migrations.MongoMigrator;
 import io.quarkiverse.mongodb.migrations.runtime.MigrationLock;
-import io.quarkiverse.mongodb.migrations.runtime.MigrationsStatus;
-import io.quarkiverse.mongodb.migrations.runtime.MongoMigratorImpl;
 import io.quarkus.test.QuarkusExtensionTest;
 
 /**
@@ -44,7 +45,7 @@ public class MigrationStatusTest {
             .overrideConfigKey("quarkus.mongodb-migrations.instance-id", "status-test");
 
     @Inject
-    MongoMigratorImpl migrator;
+    MongoMigrator migrator;
 
     @Inject
     MongoClient client;
@@ -53,8 +54,8 @@ public class MigrationStatusTest {
     void reportsAppliedPendingFailedMigrationsAndTheLock() throws InterruptedException {
         MigrationsStatus initial = migrator.status();
         assertEquals(List.of("first", "second", "always"), initial.migrations().stream().map(m -> m.id()).toList());
-        assertEquals(3, initial.pending());
-        assertTrue(initial.migrations().stream().noneMatch(MigrationsStatus.Migration::applied));
+        assertEquals(List.of("first", "second", "always"), initial.pending());
+        assertTrue(initial.migrations().stream().noneMatch(MigrationStatus::applied));
         assertNull(initial.lock(), "the lock is free");
 
         assertThrows(MigrationException.class, migrator::migrate);
@@ -66,16 +67,16 @@ public class MigrationStatusTest {
                         .append("error", new Document("type", "java.lang.IllegalStateException")
                                 .append("message", "stale failure")));
         MigrationsStatus afterFailure = migrator.status();
-        assertEquals(2, afterFailure.pending(), "the failed migration and the runAlways one");
+        assertEquals(List.of("second", "always"), afterFailure.pending(), "the failed migration and the runAlways one");
 
-        MigrationsStatus.Migration first = afterFailure.migrations().get(0);
+        MigrationStatus first = afterFailure.migration("first");
         assertTrue(first.applied());
         assertEquals("status-test", first.appliedBy());
         assertEquals(1, first.runCount());
         assertNotNull(first.appliedAt());
         assertNull(first.lastFailure());
 
-        MigrationsStatus.Migration second = afterFailure.migrations().get(1);
+        MigrationStatus second = afterFailure.migration("second");
         assertFalse(second.applied());
         assertEquals("second failed on purpose", second.lastFailure().errorMessage(), "the latest by server time");
         assertEquals(IllegalStateException.class.getName(), second.lastFailure().errorType());
@@ -84,7 +85,7 @@ public class MigrationStatusTest {
         failSecond = false;
         migrator.migrate();
         MigrationsStatus fixed = migrator.status();
-        assertEquals(1, fixed.pending(), "only the runAlways migration");
+        assertEquals(List.of("always"), fixed.pending(), "only the runAlways migration");
         assertTrue(fixed.migrations().get(1).applied());
         assertNull(fixed.migrations().get(1).lastFailure(), "a failure is no longer shown once the migration succeeds");
         assertTrue(fixed.migrations().get(2).runAlways());
