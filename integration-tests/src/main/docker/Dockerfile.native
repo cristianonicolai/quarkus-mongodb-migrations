@@ -1,0 +1,17 @@
+####
+# Packages the native executable of the integration-test application, so the native integration tests can run it
+# with Docker on platforms that can't run a Linux executable directly, such as macOS. Used by the native-macos Maven
+# profile; see the README.
+####
+# UBI 9, like the Mandrel builder image: the executable needs its glibc.
+FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0
+WORKDIR /work/
+RUN chown 1001 /work \
+    && chmod "g+rwX" /work \
+    && chown 1001:root /work
+COPY --chown=1001:root --chmod=0755 target/*-runner /work/application
+
+EXPOSE 8080
+USER 1001
+
+ENTRYPOINT ["./application", "-Dquarkus.http.host=0.0.0.0"]
