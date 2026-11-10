@@ -27,11 +27,12 @@ what a Quarkus extension does well instead of working around it.
   generated, and the application waits for it.
 - **Idempotent helpers** for creating and dropping indexes and collections, TTL indexes, and renaming or removing
   fields, in blocking and reactive variants.
+- **Dev UI card** showing which migrations are applied or pending, their latest failures and the lock holder, with a
+  button to run pending migrations.
 
 Planned:
 
 - Importing migration history from a previous tool, so already applied changes are not run again.
-- A Dev UI page listing applied and pending migrations.
 - A health check.
 
 ## Usage
@@ -149,6 +150,18 @@ to finish, and migrations are disabled in the pods themselves. Keep `migrate-at-
 
 Without those extensions, the same can be done by hand: run the application with `QUARKUS_INIT_AND_EXIT=true` as a
 one-off job, and set `QUARKUS_MONGODB_MIGRATIONS_ENABLED=false` on the regular deployment.
+
+### Dev UI
+
+In dev mode, the Dev UI (`/q/dev-ui`) has a **MongoDB Migrations** card with two pages:
+
+- **Status:** every migration with its state (applied, pending, failed or runs always), when and by which instance it
+  was applied, its run count, and its latest failure with the rollback outcome. It also shows who holds the lock, and
+  has a button to run the pending migrations without restarting the application. The card's label shows how many
+  migrations are pending.
+- **Migrations:** the migrations found at build time, with their order, id, type and class.
+
+The Dev UI needs an HTTP server in the application, such as the one `quarkus-rest` brings in.
 
 ### Helpers
 
