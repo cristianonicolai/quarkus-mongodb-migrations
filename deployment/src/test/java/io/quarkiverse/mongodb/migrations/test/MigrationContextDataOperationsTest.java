@@ -308,6 +308,30 @@ public class MigrationContextDataOperationsTest {
     }
 
     @Test
+    void forDatabaseSharesTheChangeCountAndTheTransaction(TestInfo info) {
+        String audit = UUID.randomUUID().toString();
+        MongoCollection<Document> events = client.getDatabase(audit).getCollection("events");
+        events.insertMany(List.of(new Document("_id", 1), new Document("_id", 2).append("version", 3)));
+
+        MigrationContext context = context(info);
+        assertEquals(1, context.forDatabase(audit).setFieldIfMissing("events", "version", 1));
+        assertEquals(OptionalLong.of(1), context.documentsChanged(), "counted for the migration");
+        assertEquals(audit, context.forDatabase(audit).database().getName());
+
+        try (ClientSession session = client.startSession()) {
+            session.startTransaction();
+            MigrationContext transactional = new MigrationContext(client, databaseName(info), session);
+            assertEquals(2, transactional.forDatabase(audit).setField("events", empty(), "aborted", true));
+            session.abortTransaction();
+        }
+        assertEquals(0, events.countDocuments(exists("aborted")), "aborted with the migration's transaction");
+
+        ReactiveMigrationContext reactive = new ReactiveMigrationContext(reactiveClient, databaseName(info));
+        assertEquals(2L, reactive.forDatabase(audit).setField("events", empty(), "reactive", true).await().indefinitely());
+        assertEquals(OptionalLong.of(2), reactive.documentsChanged());
+    }
+
+    @Test
     void updateManyAndDeleteManyCountTheirChanges(TestInfo info) {
         MigrationContext context = context(info);
         MongoCollection<Document> runs = context.collection("runs");

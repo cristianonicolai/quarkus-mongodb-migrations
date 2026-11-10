@@ -15,9 +15,9 @@ endif::add-copy-button-to-config-props[]
 
 [.description]
 --
-Name of the MongoDB client that stores the migration history and lock, as configured under `quarkus.mongodb.<name>`. Uses the default client when not set.
+Name of the MongoDB client that migrations work with and that stores the migration history and lock, as configured under `quarkus.mongodb.<name>`. Uses the default client when not set.
 
-Migrations themselves can inject any client.
+The migration context works on this client's database. Migrations can still inject any other client.
 
 
 ifdef::add-copy-button-to-env-var[]

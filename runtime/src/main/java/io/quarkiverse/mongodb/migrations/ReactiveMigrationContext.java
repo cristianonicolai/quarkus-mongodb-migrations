@@ -43,7 +43,8 @@ import io.smallrye.mutiny.Uni;
  * <p>
  * The collection, index, field and array helpers can run again safely: they skip work that is already done.
  * {@code updateMany}, {@code deleteMany} and {@code updateEach} run the update they are given, so its author makes it
- * safe to repeat. To work on other databases, use {@code forEachDatabase} or {@link #client()}.
+ * safe to repeat. To work on other databases, use {@link #forDatabase(String)}, {@code forEachDatabase} or
+ * {@link #client()}.
  * <p>
  * In a {@link Migration#transactional() transactional} migration, {@link #session()} returns the transaction's
  * session, the data helpers run in the transaction, and the collection and index helpers fail.
@@ -350,6 +351,16 @@ public final class ReactiveMigrationContext {
                 .group().intoLists().of(DataOperations.BATCH_SIZE)
                 .onItem().transformToUniAndConcatenate(batch -> bulkWrite(target, batch))
                 .collect().with(Collectors.summingLong(Long::longValue));
+    }
+
+    /**
+     * A context for another database of the same client. Changes made through it count towards this migration, and in a
+     * transactional migration they take part in its transaction. The database doesn't have to exist yet.
+     *
+     * @see MigrationContext#forDatabase(String)
+     */
+    public ReactiveMigrationContext forDatabase(String databaseName) {
+        return new ReactiveMigrationContext(client, databaseName, session, changes);
     }
 
     /**
