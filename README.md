@@ -56,7 +56,7 @@ Add the dependency:
 |---|---|
 | `@Migration` | Marks a migration class: `id` and `order` (both unique), optional `runAlways` and `transactional`. |
 | `MongoMigration` / `ReactiveMongoMigration` | What a migration implements: `apply(context)`, and optionally `rollback(context)`. The reactive one returns `Uni<Void>`. |
-| `MigrationContext` / `ReactiveMigrationContext` | Passed to `apply` and `rollback`: `database()`, `collection(name)`, `client()`, `session()` (transactional migrations), the [helpers](#helpers), and `recordChanges(...)`. |
+| `MigrationContext` / `ReactiveMigrationContext` | Passed to `apply` and `rollback`: `database()`, `collection(name)`, `client()`, `session()` (transactional migrations), the [helpers](#helpers), `forEachDatabase`/`forEachCollection`, and `recordChanges(...)`. |
 | `MongoMigrator` | Inject it to run pending migrations with `migrate()`. |
 | `MigrationHelpers` / `ReactiveMigrationHelpers` | The helpers as static methods taking a database, for other databases. |
 | `MigrationException` | Thrown when a migration run fails. |
@@ -85,10 +85,16 @@ public class CreateUsersEmailIndex implements MongoMigration {
 }
 ```
 
-For anything the helpers don't cover, `context.database()` and `context.collection(name)` give full access to the
-MongoDB driver. `context.client()` returns the client itself, for other databases, admin commands, or sessions you
-manage yourself. For a migration that should run in a transaction, see
-[Transactional migrations](#transactional-migrations).
+For anything the [helpers](#helpers) don't cover, the context gives full access to the MongoDB driver:
+
+```java
+MongoDatabase database = context.database();                          // the database being migrated
+MongoCollection<Document> orders = context.collection("orders");      // one of its collections
+orders.aggregate(List.of(match(eq("status", "open")), out("openOrders")));
+context.client().getDatabase("admin").runCommand(new Document("ping", 1));   // the client, for anything else
+```
+
+For a migration that should run in a transaction, see [Transactional migrations](#transactional-migrations).
 
 For reactive code, implement `ReactiveMongoMigration`. It receives a `ReactiveMigrationContext` with the same helpers,
 returning `Uni`:
@@ -123,8 +129,8 @@ A migration can report how many documents it changed. The count is logged, store
 Ran migration backfill-order-status in 1204 ms, 4210 documents changed
 ```
 
-The field helpers (`renameField`, `removeField`) count their own changes. For changes made with the driver, pass the
-result to the context:
+The [field, array, `updateMany`, `deleteMany` and `updateEach` helpers](#fields) count their own changes. For changes made with the driver, pass
+the result to the context:
 
 ```java
 context.recordChanges(context.collection("orders").updateMany(eq("status", null), set("status", "open")));
@@ -157,7 +163,8 @@ public class BackfillOrderStatus implements MongoMigration {
 ```
 
 - Pass `context.session()` to every driver call. The driver can't attach a session implicitly, so calls without it run
-  outside the transaction. The field helpers (`renameField`, `removeField`) use the session automatically.
+  outside the transaction. The field, array, `updateMany`, `deleteMany` and `updateEach` helpers use the session
+  automatically.
 - When the migration fails, the transaction is aborted and `rollback` is not called. The abort discards every write
   made with `context.session()`; writes made without it ran outside the transaction and are kept. The failure is still
   recorded in the failure collection, which is written outside the transaction.
@@ -259,22 +266,159 @@ The Dev UI needs an HTTP server in the application, such as the one `quarkus-res
 
 ### Helpers
 
-The migration contexts provide steps that are safe to run more than once, on the database being migrated:
+The migration contexts provide helpers that work on the database being migrated. In a `ReactiveMigrationContext`
+they have the same names and arguments, and return a `Uni`.
 
-| Helper | What it does |
-|---|---|
-| `createCollection` / `dropCollection` | Creates the collection unless it exists, or drops it if it exists. |
-| `renameCollection` | Renames a collection, unless the source is already gone. |
-| `collectionExists` | Whether a collection exists. |
-| `createIndex` | Creates a named index unless an index with that name exists. |
-| `createTtlIndex` | Creates a named TTL index on a date field. |
-| `dropIndex` | Drops a named index if it exists. |
-| `indexExists` | Whether a named index exists. |
-| `renameField` / `removeField` | Renames or removes a field in every document that has it. |
+The collection, index, field and array helpers are safe to run more than once: they skip work that is already done,
+so a migration that failed halfway can be retried. `updateMany`, `deleteMany` and `updateEach` run the update you give
+them, so make that update safe to repeat, for example with a filter that skips documents already migrated.
 
-The same helpers are available as static methods taking the database as their first argument, in `MigrationHelpers`
-(blocking, on `MongoDatabase`) and `ReactiveMigrationHelpers` (returning `Uni`, on `ReactiveMongoDatabase`), for
-migrations that work on another database.
+#### Collections
+
+```java
+if (!context.collectionExists("auditLog")) { ... }       // whether the collection exists
+context.createCollection("auditLog");                    // creates it, unless it already exists
+context.renameCollection("auditLog", "auditEvents");     // renames it, unless the source is already gone
+context.dropCollection("modelExecutionStats");           // drops it, if it exists
+```
+
+#### Indexes
+
+Indexes are identified by name, so creating one that already exists is skipped.
+
+```java
+if (!context.indexExists("users", "email_idx")) { ... }                       // whether a named index exists
+context.createIndex("users", "email_idx", ascending("email"));                 // creates a named index
+context.createIndex("users", "email_idx", ascending("email"), new IndexOptions().unique(true));   // with options
+context.createTtlIndex("personalAccessTokens", "expires_ttl", "expiresAt", Duration.ofDays(30)); // TTL on a date field
+context.dropIndex("users", "email_idx");                                        // drops it, if it exists
+```
+
+#### Fields
+
+Each of these returns the number of documents it changed, and adds it to the migration's
+[changed-document count](#counting-changed-documents).
+
+```java
+// Sets a value on every document matching the filter.
+context.setField("tenants", empty(), "deleted", false);
+
+// Sets several values at once.
+context.setFields("plans", eq("_id", "trial"), Map.of("maxThreads", 4, "configurable", true));
+
+// Sets a default where the field is missing or null, leaving existing values alone.
+context.setFieldIfMissing("tenants", "createdAt", Instant.EPOCH);
+
+// The same, limited to documents matching a filter: here, only plans that have maps settings.
+context.setFieldIfMissing("plans", exists("mapsSettings"), "mapsSettings.allowTraffic", false);
+
+// Renames a field in every document that has it.
+context.renameField("users", "mail", "email");
+
+// Removes a field from every document that has it.
+context.removeField("registeredModels", "insightsQueryName");
+```
+
+#### Fields in arrays
+
+These work on arrays of documents, such as a tenant's `members`. Documents without the array are skipped.
+
+```java
+// Sets a field on every element.
+context.setFieldInArray("tenants", "members", "notified", true);
+
+// Sets a field on the elements that match a filter, written on the element's own fields.
+context.setFieldInArray("tenants", "apiKeys", eq("name", "timefold-platform"), "type", "PLATFORM");
+context.setFieldInArray("tenants", "apiKeys", not(eq("name", "timefold-platform")), "type", "USER");
+
+// Sets a default on the elements where the field is missing or null, leaving existing values alone.
+context.setFieldInArrayIfMissing("tenants", "members", "status", "ACTIVE");
+
+// Removes a field from every element that has it.
+context.removeFieldInArray("tenants", "members", "legacyRole");
+```
+
+Element filters can combine conditions with `and`, `or` and `nor`. Arrays nested in arrays aren't covered; use the
+driver directly with `context.collection(name)` for those.
+
+#### Updates and deletes with the driver's builders
+
+`updateMany` and `deleteMany` take the driver's filters and updates directly, for anything the field helpers don't
+cover. Unlike calling the driver yourself, they count their changes and run in the transaction of a transactional
+migration automatically.
+
+```java
+// Any update. The filter skips orders already migrated, so a retried migration doesn't increment twice.
+context.updateMany("orders", and(eq("status", "failed"), ne("retry", true)),
+        combine(set("retry", true), inc("attempts", 1)));
+
+// An aggregation pipeline, for updates that use the document's own values:
+// converting a field's type...
+context.updateMany("RunStatistics", empty(), List.of(set("tenantId", new Document("$toString", "$tenantId"))));
+// ...or copying one field to another.
+context.updateMany("plans", empty(), List.of(set("maxThreadsQueued", "$maxConcurrentExecutions")));
+
+// Deletes every matching document.
+context.deleteMany("auditLog", lt("timestamp", Instant.now().minus(Duration.ofDays(365))));
+```
+
+#### A computed value per document
+
+`updateEach` updates each document matching a filter with an update computed from that document, for values that
+differ per document. Return `null` to leave a document unchanged. Documents are streamed and written in batches of
+1,000, so memory stays flat on large collections.
+
+```java
+context.updateEach("registeredModels", exists("registrationKey", false),
+        model -> set("registrationKey", UUID.randomUUID().toString()));
+
+// With a projection, to read only the fields needed. It must keep _id: leave it out or include it.
+context.updateEach("reports", exists("modelId"), include("modelId", "modelVersion"),
+        report -> combine(
+                set("dataSets.$[].modelId", report.getString("modelId")),
+                set("dataSets.$[].modelVersion", report.getString("modelVersion")),
+                unset("modelId"),
+                unset("modelVersion")));
+```
+
+In a reactive context, `updateEach` returns `Uni<Long>`.
+
+#### In transactional migrations
+
+The field, array, `updateMany`, `deleteMany` and `updateEach` helpers run in the transaction automatically. The collection and index helpers
+change the schema, which MongoDB doesn't allow in a transaction, so they refuse to run there.
+
+#### Several databases
+
+When data is split across databases, for example one per tenant, `forEachDatabase` runs an action for each database
+whose name matches, with a context for it. `forEachCollection` does the same for the existing collections of a
+database. MongoDB's own databases (`admin`, `local`, `config`) and `system.*` collections are never included.
+
+```java
+context.forEachDatabase(name -> isTenantId(name), tenant ->
+        tenant.forEachCollection(name -> name.endsWith("-events"), collection ->
+                tenant.createIndex(collection, "run_id_init_solution_asc", ascending("runId", "initSolution"))));
+```
+
+Changes made through the database contexts count towards the migration, and in a transactional migration they take
+part in its transaction. Listing databases needs the `listDatabases` privilege. In a reactive context, both take a
+function returning `Uni<Void>` and visit one database or collection at a time:
+
+```java
+context.forEachDatabase(name -> isTenantId(name), tenant ->
+        tenant.setFieldIfMissing("settings", "version", 1).replaceWithVoid());
+```
+
+For a single other database, create a context for it from the same client:
+
+```java
+MigrationContext audit = new MigrationContext(context.client(), "audit");
+audit.setFieldIfMissing("events", "version", 1);
+```
+
+The collection, index and `renameField`/`removeField` helpers are also available as static methods taking the
+database as their first argument, in `MigrationHelpers` (blocking, on `MongoDatabase`) and `ReactiveMigrationHelpers`
+(returning `Uni`, on `ReactiveMongoDatabase`).
 
 ### Testing a migration
 
