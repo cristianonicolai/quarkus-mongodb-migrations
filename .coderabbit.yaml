@@ -39,7 +39,9 @@ reviews:
       instructions: |
         Public API used by applications (@Migration, MongoMigration, ReactiveMongoMigration, MongoMigrator, the
         helpers). Flag source or behavior incompatibilities, missing or inaccurate Javadoc, and helpers that are not
-        idempotent: every helper must be safe to run twice.
+        idempotent: the collection, index, field and array helpers must be safe to run twice. updateMany, deleteMany,
+        updateEach and writeEach run the updates and writes they are given, so their author makes those safe to repeat;
+        flag them only when their documentation stops saying so.
     - path: "runtime/src/main/java/io/quarkiverse/mongodb/migrations/runtime/MigrationLock.java"
       instructions: |
         Lease-based lock in a single MongoDB document; review with care for races between instances.

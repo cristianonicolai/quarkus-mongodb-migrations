@@ -42,8 +42,9 @@ import io.smallrye.mutiny.Uni;
  * reactive counterpart of {@link MigrationContext}, targeting the same database.
  * <p>
  * The collection, index, field and array helpers can run again safely: they skip work that is already done.
- * {@code updateMany}, {@code deleteMany} and {@code updateEach} run the update they are given, so its author makes it
- * safe to repeat. To work on other databases, use {@link #forDatabase(String)}, {@code forEachDatabase} or
+ * {@code updateMany}, {@code deleteMany} and {@code updateEach} run the update they are given, and {@code writeEach} the
+ * writes it is given, so their author makes them safe to repeat. To work on other databases, use {@link #forDatabase(String)},
+ * {@code forEachDatabase} or
  * {@link #client()}.
  * <p>
  * In a {@link Migration#transactional() transactional} migration, {@link #session()} returns the transaction's
@@ -310,6 +311,9 @@ public final class ReactiveMigrationContext {
      * Updates each document matching the filter with an update computed from the document itself. Return
      * {@code null} to leave a document unchanged. Documents are streamed and written in batches. Counts as changed
      * documents.
+     * <p>
+     * The function runs on the thread that delivers the documents, which can be an event-loop thread, so it must not
+     * block: no blocking client calls, sleeps or other slow I/O.
      *
      * @return the number of documents changed
      * @see MigrationContext#updateEach(String, Bson, Function)
@@ -350,7 +354,60 @@ public final class ReactiveMigrationContext {
                 })
                 .group().intoLists().of(DataOperations.BATCH_SIZE)
                 .onItem().transformToUniAndConcatenate(batch -> bulkWrite(target, batch))
-                .collect().with(Collectors.summingLong(Long::longValue));
+                .collect().with(Collectors.summingLong(Long::longValue))
+                // Reported even when nothing was written, so a run that changed nothing counts 0 rather than unknown.
+                .invoke(() -> changes.add(0));
+    }
+
+    /**
+     * Writes to another collection for each document matching the filter. The function returns the writes for a
+     * document; an empty list or {@code null} writes nothing. Documents are streamed and the writes sent in batches.
+     * Counts as changed documents.
+     * <p>
+     * The function runs on the thread that delivers the documents, which can be an event-loop thread, so it must not
+     * block: no blocking client calls, sleeps or other slow I/O.
+     *
+     * @return the number of documents inserted, updated, upserted or deleted in the target collection, counted per
+     *         write: two writes that change the same document count twice
+     * @see MigrationContext#writeEach(String, Bson, String, Function)
+     */
+    public Uni<Long> writeEach(String collection, Bson filter, String target,
+            Function<Document, List<? extends WriteModel<Document>>> writes) {
+        return writeEach(collection, filter, null, target, writes);
+    }
+
+    /**
+     * Like {@link #writeEach(String, Bson, String, Function)}, reading only the fields in the projection.
+     *
+     * @return the number of documents inserted, updated, upserted or deleted in the target collection, counted per
+     *         write: two writes that change the same document count twice
+     */
+    public Uni<Long> writeEach(String collection, Bson filter, Bson projection, String target,
+            Function<Document, List<? extends WriteModel<Document>>> writes) {
+        try {
+            DataOperations.requireOtherCollection(collection, target);
+        } catch (IllegalArgumentException e) {
+            return Uni.createFrom().failure(e);
+        }
+        ReactiveMongoCollection<Document> source = database.getCollection(collection);
+        ReactiveMongoCollection<Document> destination = database.getCollection(target);
+        FindOptions options = new FindOptions().sort(Sorts.ascending("_id")).batchSize(DataOperations.BATCH_SIZE);
+        if (projection != null) {
+            options.projection(projection);
+        }
+        Multi<Document> documents = session == null ? source.find(filter, options) : source.find(session, filter, options);
+        // Bounded by backpressure, like updateEach: one batch of writes is prepared ahead of the bulk write in progress.
+        return documents
+                .onItem().transformToIterable(document -> {
+                    List<? extends WriteModel<Document>> documentWrites = writes.apply(document);
+                    return documentWrites == null ? List.<WriteModel<Document>> of()
+                            : List.<WriteModel<Document>> copyOf(documentWrites);
+                })
+                .group().intoLists().of(DataOperations.BATCH_SIZE)
+                .onItem().transformToUniAndConcatenate(batch -> bulkWrite(destination, batch))
+                .collect().with(Collectors.summingLong(Long::longValue))
+                // Reported even when nothing was written, so a run that changed nothing counts 0 rather than unknown.
+                .invoke(() -> changes.add(0));
     }
 
     /**
@@ -447,7 +504,7 @@ public final class ReactiveMigrationContext {
 
     private Uni<Long> bulkWrite(ReactiveMongoCollection<Document> target, List<WriteModel<Document>> batch) {
         Uni<BulkWriteResult> result = session == null ? target.bulkWrite(batch) : target.bulkWrite(session, batch);
-        return result.invoke(changes::add).map(r -> r.wasAcknowledged() ? (long) r.getModifiedCount() : 0L);
+        return result.invoke(changes::add).map(ChangeCounter::changed);
     }
 
     private CodecRegistry registry(String collection) {

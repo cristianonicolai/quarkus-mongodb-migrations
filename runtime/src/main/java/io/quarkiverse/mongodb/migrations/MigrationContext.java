@@ -43,8 +43,9 @@ import com.mongodb.client.result.UpdateResult;
  * client named by {@code quarkus.mongodb-migrations.mongo-client-name}). The collection, index, field and array helpers
  * can run again safely: they skip work that is already done, so a migration that failed halfway can be retried.
  * {@link #updateMany(String, Bson, Bson) updateMany}, {@link #deleteMany(String, Bson) deleteMany} and
- * {@link #updateEach(String, Bson, java.util.function.Function) updateEach} run the update they are given, so its
- * author makes it safe to repeat. To work on other databases, use {@link #forDatabase(String)},
+ * {@link #updateEach(String, Bson, java.util.function.Function) updateEach} run the update they are given, and
+ * {@link #writeEach(String, Bson, String, Function) writeEach} the writes it is given, so their author makes them safe
+ * to repeat. To work on other databases, use {@link #forDatabase(String)},
  * {@link #forEachDatabase(Predicate, Consumer)} or {@link #client()}.
  * <p>
  * In a {@link Migration#transactional() transactional} migration, {@link #session()} returns the transaction's
@@ -342,6 +343,71 @@ public final class MigrationContext {
         if (!batch.isEmpty()) {
             changed += bulkWrite(target, batch);
         }
+        // Reported even when nothing was written, so a run that changed nothing counts 0 rather than unknown.
+        changes.add(0);
+        return changed;
+    }
+
+    /**
+     * Writes to another collection for each document matching the filter, for data derived from existing documents,
+     * for example a notification for each contact of each customer. The function returns the writes for a document,
+     * such as inserts, upserts, updates or deletes on the target collection; an empty list or {@code null} writes
+     * nothing. Documents are streamed and the writes sent in batches, so memory stays flat on large collections. Counts
+     * as changed documents.
+     * <p>
+     * It runs the writes as given. To make it safe to repeat for a migration that may be retried, prefer upserts keyed by
+     * an id derived from the source document over plain inserts, which would add duplicates.
+     *
+     * @param target the collection to write to; not the one being read, whose documents are what {@code updateEach}
+     *        changes
+     * @return the number of documents inserted, updated, upserted or deleted in the target collection, counted per
+     *         write: two writes that change the same document count twice
+     */
+    public long writeEach(String collection, Bson filter, String target,
+            Function<Document, List<? extends WriteModel<Document>>> writes) {
+        return writeEach(collection, filter, null, target, writes);
+    }
+
+    /**
+     * Like {@link #writeEach(String, Bson, String, Function)}, reading only the fields in the projection.
+     *
+     * @return the number of documents inserted, updated, upserted or deleted in the target collection, counted per
+     *         write: two writes that change the same document count twice
+     */
+    public long writeEach(String collection, Bson filter, Bson projection, String target,
+            Function<Document, List<? extends WriteModel<Document>>> writes) {
+        DataOperations.requireOtherCollection(collection, target);
+        MongoCollection<Document> source = database.getCollection(collection);
+        MongoCollection<Document> destination = database.getCollection(target);
+        FindIterable<Document> documents = (session == null ? source.find(filter) : source.find(session, filter))
+                .sort(Sorts.ascending("_id"))
+                .batchSize(DataOperations.BATCH_SIZE);
+        if (projection != null) {
+            documents.projection(projection);
+        }
+        long changed = 0;
+        List<WriteModel<Document>> batch = new ArrayList<>();
+        try (MongoCursor<Document> cursor = documents.iterator()) {
+            while (cursor.hasNext()) {
+                List<? extends WriteModel<Document>> documentWrites = writes.apply(cursor.next());
+                if (documentWrites == null) {
+                    continue;
+                }
+                // One write at a time, so a bulk write never exceeds the batch size, whatever a document produces.
+                for (WriteModel<Document> write : documentWrites) {
+                    batch.add(write);
+                    if (batch.size() == DataOperations.BATCH_SIZE) {
+                        changed += bulkWrite(destination, batch);
+                        batch.clear();
+                    }
+                }
+            }
+        }
+        if (!batch.isEmpty()) {
+            changed += bulkWrite(destination, batch);
+        }
+        // Reported even when nothing was written, so a run that changed nothing counts 0 rather than unknown.
+        changes.add(0);
         return changed;
     }
 
@@ -441,7 +507,7 @@ public final class MigrationContext {
     private long bulkWrite(MongoCollection<Document> target, List<WriteModel<Document>> batch) {
         BulkWriteResult result = session == null ? target.bulkWrite(batch) : target.bulkWrite(session, batch);
         changes.add(result);
-        return result.wasAcknowledged() ? result.getModifiedCount() : 0;
+        return ChangeCounter.changed(result);
     }
 
     private CodecRegistry registry() {
