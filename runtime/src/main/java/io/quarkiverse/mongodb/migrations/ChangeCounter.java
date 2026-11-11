@@ -55,9 +55,18 @@ final class ChangeCounter {
 
     void add(BulkWriteResult result) {
         if (result.wasAcknowledged()) {
-            add((long) result.getInsertedCount() + result.getModifiedCount() + result.getDeletedCount()
-                    + result.getUpserts().size());
+            add(changed(result));
         }
+    }
+
+    /**
+     * The documents a bulk write inserted, modified, deleted or upserted; 0 when it wasn't acknowledged.
+     */
+    static long changed(BulkWriteResult result) {
+        return result.wasAcknowledged()
+                ? (long) result.getInsertedCount() + result.getModifiedCount() + result.getDeletedCount()
+                        + result.getUpserts().size()
+                : 0;
     }
 
     /**

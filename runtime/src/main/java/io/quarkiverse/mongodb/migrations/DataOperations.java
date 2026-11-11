@@ -32,6 +32,17 @@ final class DataOperations {
     /** Batch size of {@code updateEach}: large enough to be fast, small enough to keep memory flat. */
     static final int BATCH_SIZE = 1000;
 
+    /**
+     * {@code writeEach} reads one collection while writing another. Writing the one being read could make the cursor
+     * see documents it just wrote.
+     */
+    static void requireOtherCollection(String collection, String target) {
+        if (collection.equals(target)) {
+            throw new IllegalArgumentException("writeEach writes to another collection than the one it reads, "
+                    + collection + ". Use updateEach to change the documents being read.");
+        }
+    }
+
     private static final String ELEMENT = "element";
 
     private DataOperations() {

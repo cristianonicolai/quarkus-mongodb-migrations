@@ -186,7 +186,7 @@ A migration can report how many documents it changed. The count is logged, store
 Ran MongoDB migration backfill-order-status in 1204 ms, 4210 documents changed
 ----
 
-The <<fields,field, array, `updateMany`, `deleteMany` and `updateEach` helpers>> count their own changes. For changes
+The <<fields,field, array, `updateMany`, `deleteMany`, `updateEach` and `writeEach` helpers>> count their own changes. For changes
 made with the driver, pass the result to the context:
 
 [source,java]
@@ -223,7 +223,7 @@ public class BackfillOrderStatus implements MongoMigration {
 ----
 
 * Pass `context.session()` to every driver call. The driver can't attach a session implicitly, so calls without it run
-  outside the transaction. The field, array, `updateMany`, `deleteMany` and `updateEach` helpers use the session
+  outside the transaction. The field, array, `updateMany`, `deleteMany`, `updateEach` and `writeEach` helpers use the session
   automatically.
 * When the migration fails, the transaction is aborted and `rollback` is not called. The abort discards every write
   made with `context.session()`; writes made without it ran outside the transaction and are kept. The failure is still
@@ -379,8 +379,9 @@ The migration contexts provide helpers that work on the database being migrated.
 they have the same names and arguments, and return a `Uni`.
 
 The collection, index, field and array helpers are safe to run more than once: they skip work that is already done,
-so a migration that failed halfway can be retried. `updateMany`, `deleteMany` and `updateEach` run the update you give
-them, so make that update safe to repeat, for example with a filter that skips documents already migrated.
+so a migration that failed halfway can be retried. `updateMany`, `deleteMany`, `updateEach` and `writeEach` run the
+updates and writes you give them, so make those safe to repeat, for example with a filter that skips documents already
+migrated.
 
 [[collections]]
 === Collections
@@ -508,12 +509,46 @@ batches were written. Filter on the array, as `exists("shipments.0")` does here:
 shipments, which would otherwise lose their warehouse and carrier. Orders left out keep both fields, for a separate
 step to handle.
 
-In a reactive context, `updateEach` returns `Uni<Long>`.
+In a reactive context, `updateEach` returns `Uni<Long>`, and its function must not block: it runs on the thread that
+delivers the documents, which can be an event-loop thread.
+
+[[write-each]]
+=== Writing to another collection
+
+`writeEach` reads each document matching a filter and writes to another collection, for data derived from existing
+documents: for example a notification for each contact of each customer. The function returns the writes for a
+document, built with the driver's `WriteModel` types (inserts, upserts, updates or deletes); an empty list or `null`
+writes nothing. Like `updateEach`, it streams the documents and sends the writes in batches of 1,000, counts the
+changed documents, and runs in the transaction of a transactional migration.
+
+[source,java]
+----
+// A notification for each contact, created unless it already exists.
+context.writeEach("customers", exists("contacts.0"), include("contacts"), "notifications",
+        customer -> customer.getList("contacts", Document.class).stream()
+                .map(contact -> new UpdateOneModel<Document>(
+                        eq("_id", new Document("customerId", customer.get("_id")).append("email", contact.getString("email"))),
+                        combine(setOnInsert("customerId", customer.get("_id")),
+                                setOnInsert("email", contact.getString("email"))),
+                        new UpdateOptions().upsert(true)))
+                .toList());
+----
+
+Plain inserts would add duplicates when a failed migration is retried. An upsert on an `_id` derived from the source
+document, setting its fields with `setOnInsert`, creates each document once and leaves it alone afterwards, even if
+the application has changed it since. Make that `_id` a document of the source values, as here, rather than a string
+joining them: `1` and `"1"` would then be told apart, and so would values that contain the separator. The target must be another collection than the one being read: to change the
+documents being read, use `updateEach`. In a reactive context, `writeEach` returns `Uni<Long>`, and like
+`updateEach`, its function must not block.
+
+For a large copy with no per-document logic, an aggregation that ends with a `$merge` stage does the work on the
+server, without sending the documents to the application. It can't run in a transaction, though, and doesn't report
+how many documents it changed.
 
 [[helpers-in-transactional-migrations]]
 === In transactional migrations
 
-The field, array, `updateMany`, `deleteMany` and `updateEach` helpers run in the transaction automatically. The
+The field, array, `updateMany`, `deleteMany`, `updateEach` and `writeEach` helpers run in the transaction automatically. The
 collection and index helpers change the schema, which MongoDB doesn't allow in a transaction, so they refuse to run
 there.
 
@@ -598,7 +633,7 @@ A few more patterns:
   `migrator.status().migration(id)`: whether it is applied, when and by which instance, how many times it ran, how many
   documents it changed, and its latest failure.
 * *Safe to run again:* call the migration directly a second time and check it changed nothing. This matters most for
-  migrations that use `updateMany`, `deleteMany` or `updateEach`, which aren't safe to repeat on their own:
+  migrations that use `updateMany`, `deleteMany`, `updateEach` or `writeEach`, which aren't safe to repeat on their own:
 +
 [source,java]
 ----

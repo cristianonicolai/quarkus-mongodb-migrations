@@ -6,8 +6,12 @@ import static com.mongodb.client.model.Filters.exists;
 import static com.mongodb.client.model.Filters.expr;
 import static com.mongodb.client.model.Filters.not;
 import static com.mongodb.client.model.Indexes.ascending;
+import static com.mongodb.client.model.Projections.excludeId;
+import static com.mongodb.client.model.Projections.fields;
 import static com.mongodb.client.model.Projections.include;
+import static com.mongodb.client.model.Updates.combine;
 import static com.mongodb.client.model.Updates.set;
+import static com.mongodb.client.model.Updates.setOnInsert;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -31,6 +35,11 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.InsertOneModel;
+import com.mongodb.client.model.Sorts;
+import com.mongodb.client.model.UpdateOneModel;
+import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.client.model.WriteModel;
 
 import io.quarkiverse.mongodb.migrations.MigrationContext;
 import io.quarkiverse.mongodb.migrations.ReactiveMigrationContext;
@@ -330,6 +339,114 @@ public class MigrationContextDataOperationsTest {
         ReactiveMigrationContext reactive = new ReactiveMigrationContext(reactiveClient, databaseName(info));
         assertEquals(2L, reactive.forDatabase(audit).setField("events", empty(), "reactive", true).await().indefinitely());
         assertEquals(OptionalLong.of(2), reactive.documentsChanged());
+    }
+
+    @Test
+    void writeEachWritesDerivedDocumentsToAnotherCollection(TestInfo info) {
+        MigrationContext context = context(info);
+        context.collection("customers").insertMany(List.of(
+                new Document("_id", 1).append("contacts", List.of(
+                        new Document("email", "ann@example.com"), new Document("email", "bob@example.com"))),
+                new Document("_id", 2).append("contacts", List.of(new Document("email", "cid@example.com"))),
+                new Document("_id", 3).append("contacts", List.of()),
+                new Document("_id", 4)));
+
+        assertEquals(3, context.writeEach("customers", exists("contacts.0"), include("contacts"), "notifications",
+                MigrationContextDataOperationsTest::notifyContacts));
+        assertEquals(OptionalLong.of(3), context.documentsChanged());
+
+        MongoCollection<Document> notifications = context.collection("notifications");
+        assertEquals(List.of("ann@example.com", "bob@example.com", "cid@example.com"),
+                notifications.find().sort(Sorts.ascending("_id")).map(notification -> notification.getString("email"))
+                        .into(new ArrayList<>()));
+        assertEquals(new Document("customerId", 1).append("email", "ann@example.com"),
+                notifications.find().sort(Sorts.ascending("_id")).first().get("_id"), "the id keeps the source's types");
+        MigrationContext again = context(info);
+        assertEquals(0, again.writeEach("customers", exists("contacts.0"), include("contacts"), "notifications",
+                MigrationContextDataOperationsTest::notifyContacts), "upserts keyed by the source make it safe to run again");
+        assertEquals(OptionalLong.of(0), again.documentsChanged(), "nothing written counts as 0, not unknown");
+        assertEquals(3, notifications.countDocuments());
+    }
+
+    @Test
+    void writeEachBatchesWritesAndAllowsAnyProjection(TestInfo info) {
+        MigrationContext context = context(info);
+        context.collection("numbers").insertMany(IntStream.range(0, 2500)
+                .mapToObj(i -> new Document("_id", i).append("n", i)).toList());
+
+        // _id can be left out: writeEach doesn't write back to the documents it reads.
+        assertEquals(2500, context.writeEach("numbers", empty(), fields(include("n"), excludeId()), "squares",
+                number -> number.getInteger("n") % 2 == 0
+                        ? List.of(new InsertOneModel<>(new Document("n", number.getInteger("n")).append("square", 0)),
+                                new InsertOneModel<>(new Document("n", number.getInteger("n")).append("square", 1)))
+                        : null));
+        assertEquals(2500, context.collection("squares").countDocuments());
+
+        // One document producing more writes than a batch holds.
+        assertEquals(2500, context.writeEach("numbers", eq("_id", 0), "copies",
+                number -> IntStream.range(0, 2500).mapToObj(i -> new InsertOneModel<>(new Document("i", i))).toList()));
+        assertEquals(2500, context.collection("copies").countDocuments());
+    }
+
+    @Test
+    void updateEachAndWriteEachThatChangeNothingCountZero(TestInfo info) {
+        MigrationContext context = context(info);
+        assertEquals(0, context.updateEach("missing", empty(), document -> set("seen", true)));
+        assertEquals(0, context.writeEach("missing", empty(), "other", document -> List.of()));
+        assertEquals(OptionalLong.of(0), context.documentsChanged());
+
+        ReactiveMigrationContext reactive = new ReactiveMigrationContext(reactiveClient, databaseName(info));
+        assertEquals(0L, reactive.updateEach("missing", empty(), document -> set("seen", true)).await().indefinitely());
+        assertEquals(0L, reactive.writeEach("missing", empty(), "other", document -> List.of()).await().indefinitely());
+        assertEquals(OptionalLong.of(0), reactive.documentsChanged());
+    }
+
+    @Test
+    void writeEachRejectsWritingTheCollectionItReads(TestInfo info) {
+        IllegalArgumentException blocking = assertThrows(IllegalArgumentException.class,
+                () -> context(info).writeEach("customers", empty(), "customers", customer -> List.of()));
+        assertTrue(blocking.getMessage().contains("Use updateEach"), blocking.getMessage());
+        ReactiveMigrationContext reactive = new ReactiveMigrationContext(reactiveClient, databaseName(info));
+        assertThrows(IllegalArgumentException.class,
+                () -> reactive.writeEach("customers", empty(), "customers", customer -> List.of()).await().indefinitely());
+    }
+
+    @Test
+    void writeEachRunsInTheTransactionAndReactively(TestInfo info) {
+        String database = databaseName(info);
+        client.getDatabase(database).getCollection("customers").insertMany(List.of(
+                new Document("_id", 1).append("contacts", List.of(new Document("email", "ann@example.com"))),
+                new Document("_id", 2).append("contacts", List.of(new Document("email", "bob@example.com")))));
+        MongoCollection<Document> notifications = client.getDatabase(database).getCollection("notifications");
+
+        try (ClientSession session = client.startSession()) {
+            session.startTransaction();
+            MigrationContext context = new MigrationContext(client, database, session);
+            assertEquals(2, context.writeEach("customers", empty(), "notifications",
+                    MigrationContextDataOperationsTest::notifyContacts));
+            session.abortTransaction();
+        }
+        assertEquals(0, notifications.countDocuments(), "aborted with the transaction");
+
+        ReactiveMigrationContext reactive = new ReactiveMigrationContext(reactiveClient, database);
+        assertEquals(2L, reactive.writeEach("customers", empty(), include("contacts"), "notifications",
+                MigrationContextDataOperationsTest::notifyContacts).await().indefinitely());
+        assertEquals(OptionalLong.of(2), reactive.documentsChanged());
+        assertEquals(2, notifications.countDocuments());
+    }
+
+    /**
+     * A notification per contact, created unless it exists: an upsert on an id derived from the customer and the contact,
+     * setting fields only on insert.
+     */
+    private static List<? extends WriteModel<Document>> notifyContacts(Document customer) {
+        return customer.getList("contacts", Document.class).stream()
+                .map(contact -> new UpdateOneModel<Document>(
+                        eq("_id", new Document("customerId", customer.get("_id")).append("email", contact.getString("email"))),
+                        combine(setOnInsert("customerId", customer.get("_id")),
+                                setOnInsert("email", contact.getString("email"))),
+                        new UpdateOptions().upsert(true)))
+                .toList();
     }
 
     @Test
