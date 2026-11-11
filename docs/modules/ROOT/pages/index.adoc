@@ -111,7 +111,8 @@ migrations' context (`context()`, `reactiveContext()`), for example in <<testing
 |Thrown when a migration run fails.
 |===
 
-The examples below use static imports from the driver's `Filters`, `Updates` and `Indexes` builders.
+The examples below use static imports from the driver's `Filters`, `Updates`, `Indexes`, `Projections` and `Aggregates`
+builders.
 
 [[writing-a-migration]]
 == Writing a migration
@@ -169,7 +170,36 @@ public class InsertDefaultUser implements ReactiveMongoMigration {
 
 The context works on the database configured for the MongoDB client: `quarkus.mongodb.database`, or the database of
 the client named by `quarkus.mongodb-migrations.mongo-client-name`. Migrations are still CDI beans, so they can also
-inject repositories, other clients or any other bean.
+inject repositories, other clients or any other bean, with field or constructor injection. For example, the
+application's Jackson `ObjectMapper`, with its customizations, to turn a JSON string field into an embedded document:
+
+[source,java]
+----
+@Migration(id = "parse-order-metadata", order = 7)
+public class ParseOrderMetadata implements MongoMigration {
+
+    @Inject
+    ObjectMapper objectMapper;
+
+    @Override
+    public void apply(MigrationContext context) {
+        context.updateEach("orders", exists("metadataJson"), include("metadataJson"),
+                order -> combine(set("metadata", read(order.getString("metadataJson"))), unset("metadataJson")));
+    }
+
+    private Map<String, Object> read(String json) {
+        try {
+            return objectMapper.readValue(json, new TypeReference<>() {
+            });
+        } catch (JsonProcessingException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+}
+----
+
+A migration is a `@Dependent` bean: each run creates an instance and destroys it afterwards, so keep state in injected
+beans rather than in the migration. Migrations run once the application's beans are ready, also at startup.
 
 Set `runAlways = true` for a migration that should run on every migration run, even after it has been applied.
 
